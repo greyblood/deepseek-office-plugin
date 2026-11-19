@@ -121,9 +121,34 @@ pip install -e ".[dev]"
 
 ## 5. DeepSeek Harness Desktop Integration
 
-DeepSeek Harness connects to local MCP servers through its built-in `@deepseek-ai/dsh-mcp-client` plugin.
+DeepSeek Excel Studio ships as an installable **DeepSeek Harness Bundle** (`package.json` with `dsh.bundle.patch` + `cordis.patch.yml`) that connects to the local Python MCP server via `@deepseek-ai/dsh-mcp-client`.
 
-### Configuration Steps
+### Method A: Install from DeepSeek Harness Desktop (Recommended)
+
+1. Install the Python dependencies once in your system Python (Python 3.11+):
+   ```bash
+   pip install mcp openpyxl pandas pydantic
+   ```
+2. Open **DeepSeek Harness Desktop** → **Plugins** → **Add plugin**.
+3. Enter the Git repository URL:
+   ```text
+   https://github.com/greyblood/deepseek-office-plugin
+   ```
+4. Click **Install**, then **Enable** the plugin (and restart DeepSeek Harness Desktop if prompted).
+5. By default, allowed directories include your `Documents` folder and the bundled `examples/` folder. To customize directories or Python path, add an override to `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`:
+   ```yaml
+   - id: excel-studio-runtime
+     config:
+       pythonCommand: 'C:\path\to\python.exe'
+       allowedDirs:
+         - 'C:\Users\YourName\Documents'
+         - 'D:\Projects'
+       autoBackup: true
+       requireConfirmation: true
+       logLevel: 'INFO'
+   ```
+
+### Method B: Manual `cordis.patch.yml` Configuration
 
 1. Locate your DeepSeek Harness profile patch file:
    - **Windows**: `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml`

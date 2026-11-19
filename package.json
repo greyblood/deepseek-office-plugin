@@ -1,0 +1,33 @@
+{
+  "name": "deepseek-office-plugin",
+  "version": "0.1.0",
+  "description": "DeepSeek Excel Studio — secure local Excel automation MCP plugin bundle for DeepSeek Harness.",
+  "type": "module",
+  "main": "index.js",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "excel",
+    "mcp",
+    "office"
+  ],
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "excel_mcp",
+    "examples",
+    "pyproject.toml",
+    "requirements.txt",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/greyblood/deepseek-office-plugin.git"
+  },
+  "license": "MIT"
+}

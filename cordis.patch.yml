@@ -1,0 +1,22 @@
+- insert:
+    - id: excel-studio-runtime
+      name: deepseek-office-plugin
+      config: {}
+    - id: mcp-excel-studio
+      name: '@deepseek-ai/dsh-mcp-client'
+      inject:
+        - excelStudioRuntime
+      config:
+        serverName: excel
+        transport: stdio
+        command: !!js ctx.excelStudioRuntime.pythonCommand
+        args:
+          - -m
+          - excel_mcp
+        cwd: !!js ctx.excelStudioRuntime.bundleDir
+        env:
+          PYTHONPATH: !!js ctx.excelStudioRuntime.bundleDir
+          EXCEL_MCP_ALLOWED_DIRS: !!js ctx.excelStudioRuntime.allowedDirs
+          EXCEL_MCP_AUTO_BACKUP: !!js ctx.excelStudioRuntime.autoBackup
+          EXCEL_MCP_REQUIRE_CONFIRMATION: !!js ctx.excelStudioRuntime.requireConfirmation
+          EXCEL_MCP_LOG_LEVEL: !!js ctx.excelStudioRuntime.logLevel

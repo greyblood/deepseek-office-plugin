@@ -40,8 +40,8 @@ class ServerConfig(BaseModel):
         allowed_dirs_env = os.getenv("EXCEL_MCP_ALLOWED_DIRS", "").strip()
         allowed_dirs: List[Path] = []
         if allowed_dirs_env:
-            # Support both semicolon (Windows) and colon (POSIX) delimiters
-            separator = ";" if ";" in allowed_dirs_env else ":"
+            # Support semicolon on Windows (to preserve drive letters like C:\...) and colon on POSIX
+            separator = ";" if (os.name == "nt" or ";" in allowed_dirs_env) else ":"
             for raw_path in allowed_dirs_env.split(separator):
                 p = raw_path.strip()
                 if p:
