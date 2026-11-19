@@ -9,13 +9,11 @@
       config:
         serverName: excel
         transport: stdio
-        command: !!js ctx.excelStudioRuntime.pythonCommand
+        command: !!js ctx.excelStudioRuntime.nodeCommand
         args:
-          - -m
-          - excel_mcp
+          - !!js ctx.excelStudioRuntime.mcpServerScript
         cwd: !!js ctx.excelStudioRuntime.bundleDir
         env:
-          PYTHONPATH: !!js ctx.excelStudioRuntime.bundleDir
           EXCEL_MCP_ALLOWED_DIRS: !!js ctx.excelStudioRuntime.allowedDirs
           EXCEL_MCP_AUTO_BACKUP: !!js ctx.excelStudioRuntime.autoBackup
           EXCEL_MCP_REQUIRE_CONFIRMATION: !!js ctx.excelStudioRuntime.requireConfirmation

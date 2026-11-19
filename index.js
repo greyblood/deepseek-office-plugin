@@ -1,35 +1,21 @@
-import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import {
+  calculateSummary,
+  createWorkbook,
+  listWorkbooks,
+  loadSheet,
+  parseAllowedDirs,
+  saveEdits,
+  sheetOp,
+} from './lib/excel-engine.js'
+
 export const name = 'deepseek-office-plugin'
 
 const BUNDLE_DIR = path.dirname(fileURLToPath(import.meta.url))
-const BRIDGE_TIMEOUT_MS = 30_000
-
-function resolvePythonCommand(explicitCommand) {
-  if (typeof explicitCommand === 'string' && explicitCommand.trim().length > 0) {
-    return explicitCommand.trim()
-  }
-
-  const envPython = process.env.EXCEL_MCP_PYTHON?.trim()
-  if (envPython) {
-    return envPython
-  }
-
-  const localVenvPython =
-    process.platform === 'win32'
-      ? path.join(BUNDLE_DIR, '.venv', 'Scripts', 'python.exe')
-      : path.join(BUNDLE_DIR, '.venv', 'bin', 'python')
-
-  if (existsSync(localVenvPython)) {
-    return localVenvPython
-  }
-
-  return process.platform === 'win32' ? 'python' : 'python3'
-}
 
 function resolveAllowedDirs(configAllowedDirs) {
   const sep = process.platform === 'win32' ? ';' : ':'
@@ -63,118 +49,6 @@ function resolveAllowedDirs(configAllowedDirs) {
   return defaults.join(sep)
 }
 
-export function invokePythonBridge(runtime, action, payload = {}) {
-  return new Promise((resolve) => {
-    const existingPythonPath = process.env.PYTHONPATH
-    const sep = process.platform === 'win32' ? ';' : ':'
-    const pythonPath = existingPythonPath
-      ? `${runtime.bundleDir}${sep}${existingPythonPath}`
-      : runtime.bundleDir
-
-    const child = spawn(runtime.pythonCommand, ['-m', 'excel_mcp.bridge'], {
-      cwd: runtime.bundleDir,
-      shell: false,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONPATH: pythonPath,
-        EXCEL_MCP_ALLOWED_DIRS: runtime.allowedDirs,
-        EXCEL_MCP_AUTO_BACKUP: runtime.autoBackup,
-        EXCEL_MCP_REQUIRE_CONFIRMATION: runtime.requireConfirmation,
-        EXCEL_MCP_LOG_LEVEL: runtime.logLevel,
-        PYTHONIOENCODING: 'utf-8',
-      },
-    })
-
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        try {
-          child.kill()
-        } catch {
-          // ignore
-        }
-        resolve({
-          ok: false,
-          code: 'TIMEOUT',
-          error: `Excel bridge timed out after ${BRIDGE_TIMEOUT_MS / 1000}s.`,
-        })
-      }
-    }, BRIDGE_TIMEOUT_MS)
-
-    child.stdout.setEncoding('utf8')
-    child.stdout.on('data', (chunk) => {
-      stdout += chunk
-    })
-
-    child.stderr.setEncoding('utf8')
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk
-    })
-
-    child.on('error', (err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      resolve({
-        ok: false,
-        code: 'SPAWN_ERROR',
-        error: `Failed to start Python (${runtime.pythonCommand}): ${err.message}. Install Python 3.11+ and run "pip install -r requirements.txt" inside the plugin directory.`,
-      })
-    })
-
-    child.on('close', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      const trimmed = stdout.trim()
-      if (!trimmed) {
-        resolve({
-          ok: false,
-          code: 'BRIDGE_ERROR',
-          error:
-            stderr.trim() ||
-            `Python bridge exited with code ${code}. Ensure openpyxl and pydantic are installed for ${runtime.pythonCommand}.`,
-        })
-        return
-      }
-      try {
-        resolve(JSON.parse(trimmed))
-      } catch (err) {
-        resolve({
-          ok: false,
-          code: 'PARSE_ERROR',
-          error: `Invalid JSON from Python bridge: ${err.message}`,
-        })
-      }
-    })
-
-    try {
-      child.stdin.write(JSON.stringify({ action, payload }))
-      child.stdin.end()
-    } catch (err) {
-      if (!settled) {
-        settled = true
-        clearTimeout(timer)
-        resolve({ ok: false, code: 'STDIN_ERROR', error: err.message })
-      }
-    }
-  })
-}
-
-function toHttpResponse(result) {
-  if (result && result.ok) {
-    return Response.json(result, { status: 200 })
-  }
-  const code = result?.code
-  const status = code === 'SECURITY_ERROR' ? 403 : code === 'OPERATION_ERROR' ? 400 : 500
-  return Response.json(result || { ok: false, error: 'Unknown error' }, { status })
-}
-
 async function readJsonBody(request) {
   try {
     const text = await request.text()
@@ -184,11 +58,28 @@ async function readJsonBody(request) {
   }
 }
 
+async function handleAction(fn) {
+  try {
+    const data = await fn()
+    return Response.json({ ok: true, data }, { status: 200 })
+  } catch (err) {
+    const code = err?.code || 'OPERATION_ERROR'
+    const status = code === 'SECURITY_ERROR' ? 403 : code === 'OPERATION_ERROR' ? 400 : 500
+    return Response.json(
+      { ok: false, code, error: err?.message || String(err) },
+      { status }
+    )
+  }
+}
+
 export function registerEditorRoutes(connCtx, runtime) {
   const fetchRegistry = connCtx?.connection?.fetch
   if (!fetchRegistry || typeof fetchRegistry.register !== 'function') {
     return []
   }
+
+  const allowedDirs = parseAllowedDirs(runtime.allowedDirs)
+  const autoBackup = runtime.autoBackup !== 'false'
 
   const routes = [
     {
@@ -197,8 +88,7 @@ export function registerEditorRoutes(connCtx, runtime) {
       fetch: async (request) => {
         const url = new URL(request.url)
         const directory = url.searchParams.get('directory') || undefined
-        const result = await invokePythonBridge(runtime, 'list_workbooks', { directory })
-        return toHttpResponse(result)
+        return handleAction(() => listWorkbooks({ allowedDirs, directory }))
       },
     },
     {
@@ -207,8 +97,7 @@ export function registerEditorRoutes(connCtx, runtime) {
       requestBody: 'buffered',
       fetch: async (request) => {
         const payload = await readJsonBody(request)
-        const result = await invokePythonBridge(runtime, 'load_sheet', payload)
-        return toHttpResponse(result)
+        return handleAction(() => loadSheet({ allowedDirs, ...payload }))
       },
     },
     {
@@ -217,8 +106,7 @@ export function registerEditorRoutes(connCtx, runtime) {
       requestBody: 'buffered',
       fetch: async (request) => {
         const payload = await readJsonBody(request)
-        const result = await invokePythonBridge(runtime, 'create_workbook', payload)
-        return toHttpResponse(result)
+        return handleAction(() => createWorkbook({ allowedDirs, ...payload }))
       },
     },
     {
@@ -227,8 +115,7 @@ export function registerEditorRoutes(connCtx, runtime) {
       requestBody: 'buffered',
       fetch: async (request) => {
         const payload = await readJsonBody(request)
-        const result = await invokePythonBridge(runtime, 'save_edits', payload)
-        return toHttpResponse(result)
+        return handleAction(() => saveEdits({ allowedDirs, autoBackup, ...payload }))
       },
     },
     {
@@ -237,8 +124,7 @@ export function registerEditorRoutes(connCtx, runtime) {
       requestBody: 'buffered',
       fetch: async (request) => {
         const payload = await readJsonBody(request)
-        const result = await invokePythonBridge(runtime, 'sheet_op', payload)
-        return toHttpResponse(result)
+        return handleAction(() => sheetOp({ allowedDirs, autoBackup, ...payload }))
       },
     },
     {
@@ -247,8 +133,7 @@ export function registerEditorRoutes(connCtx, runtime) {
       requestBody: 'buffered',
       fetch: async (request) => {
         const payload = await readJsonBody(request)
-        const result = await invokePythonBridge(runtime, 'summary', payload)
-        return toHttpResponse(result)
+        return handleAction(() => calculateSummary({ allowedDirs, ...payload }))
       },
     },
   ]
@@ -259,7 +144,8 @@ export function registerEditorRoutes(connCtx, runtime) {
 export function apply(ctx, config = {}) {
   const runtime = {
     bundleDir: BUNDLE_DIR,
-    pythonCommand: resolvePythonCommand(config.pythonCommand),
+    nodeCommand: process.execPath,
+    mcpServerScript: path.join(BUNDLE_DIR, 'mcp-server.js'),
     allowedDirs: resolveAllowedDirs(config.allowedDirs),
     autoBackup: String(config.autoBackup ?? true),
     requireConfirmation: String(config.requireConfirmation ?? true),

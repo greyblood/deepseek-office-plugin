@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import vm from 'node:vm'
@@ -9,7 +11,7 @@ import { apply as applyHost } from '../index.js'
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-test('package.json declares valid DSH dual-face bundle and client exports', () => {
+test('package.json declares valid DSH dual-face bundle, client exports, and bundled dependencies', () => {
   const pkg = JSON.parse(readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'))
   assert.equal(pkg.name, 'deepseek-office-plugin')
   assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml')
@@ -18,72 +20,184 @@ test('package.json declares valid DSH dual-face bundle and client exports', () =
   assert.equal(pkg.exports?.['./client'], './client.js')
   assert.equal(pkg.exports?.['./package.json'], './package.json')
   assert.ok(pkg.files.includes('client.js'))
+  assert.ok(pkg.files.includes('mcp-server.js'))
+  assert.ok(pkg.files.includes('lib'))
+  assert.ok(pkg.dependencies?.exceljs)
+  assert.ok(pkg.dependencies?.['@modelcontextprotocol/sdk'])
 })
 
-test('index.js mounts authenticated /api/excel-studio/* routes and talks to Python bridge', async () => {
-  const provided = new Map()
-  const routes = new Map()
+test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS engine', async () => {
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'dsh-excel-studio-'))
+  try {
+    const provided = new Map()
+    const routes = new Map()
 
-  const mockConnCtx = {
-    connection: {
-      fetch: {
-        register(route) {
-          routes.set(route.path, route)
-          return () => routes.delete(route.path)
+    const mockConnCtx = {
+      connection: {
+        fetch: {
+          register(route) {
+            routes.set(route.path, route)
+            return () => routes.delete(route.path)
+          },
         },
       },
-    },
-    effect(fn) {
-      fn()
-    },
-  }
+      effect(fn) {
+        fn()
+      },
+    }
 
-  const mockCtx = {
-    provide(key, value) {
-      provided.set(key, value)
-    },
-    inject(deps, cb) {
-      if (deps.includes('connection')) {
-        cb(mockConnCtx)
-      }
-    },
-  }
+    const mockCtx = {
+      provide(key, value) {
+        provided.set(key, value)
+      },
+      inject(deps, cb) {
+        if (deps.includes('connection')) cb(mockConnCtx)
+      },
+    }
 
-  applyHost(mockCtx, {
-    allowedDirs: [path.join(ROOT_DIR, 'examples')],
+    applyHost(mockCtx, {
+      allowedDirs: [tmpDir, path.join(ROOT_DIR, 'examples')],
+    })
+
+    assert.ok(provided.has('excelStudioRuntime'))
+    assert.ok(routes.has('/api/excel-studio/workbooks'))
+    assert.ok(routes.has('/api/excel-studio/open'))
+    assert.ok(routes.has('/api/excel-studio/create'))
+    assert.ok(routes.has('/api/excel-studio/save'))
+    assert.ok(routes.has('/api/excel-studio/sheet-op'))
+    assert.ok(routes.has('/api/excel-studio/summary'))
+
+    // 1. Create a new workbook in tmpDir
+    const createRes = await routes.get('/api/excel-studio/create').fetch(
+      new Request('http://localhost/api/excel-studio/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directory: tmpDir, filename: 'budget.xlsx', sheet_name: 'Q1' }),
+      })
+    )
+    assert.equal(createRes.status, 200)
+    const createJson = await createRes.json()
+    assert.equal(createJson.ok, true)
+    assert.equal(createJson.data.active_sheet, 'Q1')
+    const createdPath = createJson.data.file_path
+
+    // 2. Save edits + formatting (with automatic .dsh_backup snapshot)
+    const saveRes = await routes.get('/api/excel-studio/save').fetch(
+      new Request('http://localhost/api/excel-studio/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_path: createdPath,
+          sheet_name: 'Q1',
+          edits: [
+            { cell: 'A1', value: 'Item' },
+            { cell: 'B1', value: 'Amount' },
+            { cell: 'A2', value: 'Hosting' },
+            { cell: 'B2', value: '450.25' },
+            { cell: 'B3', value: '=B2*2' },
+          ],
+          formats: [
+            { cell: 'A1', bold: true, fill_color: '#1F4E79', font_color: '#FFFFFF' },
+            { cell: 'B2', number_format: '$#,##0.00', align: 'right' },
+          ],
+        }),
+      })
+    )
+    assert.equal(saveRes.status, 200)
+    const saveJson = await saveRes.json()
+    assert.equal(saveJson.ok, true)
+    assert.ok(saveJson.data.backup_path)
+    assert.equal(saveJson.data.cells.A1.style.bold, true)
+    assert.equal(saveJson.data.cells.A1.style.fill, '#1F4E79')
+    assert.equal(saveJson.data.cells.B2.raw, 450.25)
+    assert.equal(saveJson.data.cells.B3.formula, '=B2*2')
+
+    // 3. Summary stats
+    const sumRes = await routes.get('/api/excel-studio/summary').fetch(
+      new Request('http://localhost/api/excel-studio/summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: createdPath, sheet_name: 'Q1' }),
+      })
+    )
+    assert.equal(sumRes.status, 200)
+    const sumJson = await sumRes.json()
+    assert.equal(sumJson.ok, true)
+    assert.equal(sumJson.data.summary.Amount.sum, 450.25)
+
+    // 4. Security sandbox blocks paths outside allowed directories
+    const blockedRes = await routes.get('/api/excel-studio/open').fetch(
+      new Request('http://localhost/api/excel-studio/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: '/etc/passwd' }),
+      })
+    )
+    assert.equal(blockedRes.status, 403)
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true })
+  }
+})
+
+test('bundled Node.js mcp-server.js responds to MCP initialize and tools/list over STDIO', async () => {
+  const child = spawn(process.execPath, [path.join(ROOT_DIR, 'mcp-server.js')], {
+    cwd: ROOT_DIR,
+    env: { ...process.env, EXCEL_MCP_ALLOWED_DIRS: path.join(ROOT_DIR, 'examples') },
+    stdio: ['pipe', 'pipe', 'pipe'],
   })
 
-  assert.ok(provided.has('excelStudioRuntime'))
-  assert.ok(routes.has('/api/excel-studio/workbooks'))
-  assert.ok(routes.has('/api/excel-studio/open'))
-  assert.ok(routes.has('/api/excel-studio/create'))
-  assert.ok(routes.has('/api/excel-studio/save'))
-  assert.ok(routes.has('/api/excel-studio/sheet-op'))
-  assert.ok(routes.has('/api/excel-studio/summary'))
+  const responses = []
+  let buffer = ''
 
-  // Live round-trip through Python bridge on examples/sample_financials.xlsx
-  const listRes = await routes.get('/api/excel-studio/workbooks').fetch(
-    new Request('http://localhost/api/excel-studio/workbooks', { method: 'GET' })
-  )
-  assert.equal(listRes.status, 200)
-  const listJson = await listRes.json()
-  assert.equal(listJson.ok, true)
-  const sample = listJson.data.workbooks.find((w) => w.name === 'sample_financials.xlsx')
-  assert.ok(sample, 'Expected sample_financials.xlsx in allowed examples dir')
+  const done = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error('MCP server timed out'))
+    }, 8000)
 
-  const openRes = await routes.get('/api/excel-studio/open').fetch(
-    new Request('http://localhost/api/excel-studio/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_path: sample.path }),
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        responses.push(JSON.parse(line))
+        if (responses.length === 2) {
+          clearTimeout(timer)
+          child.kill()
+          resolve()
+        }
+      }
     })
+  })
+
+  child.stdin.write(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test', version: '1.0.0' },
+      },
+    }) + '\n'
   )
-  assert.equal(openRes.status, 200)
-  const openJson = await openRes.json()
-  assert.equal(openJson.ok, true)
-  assert.equal(openJson.data.filename, 'sample_financials.xlsx')
-  assert.ok(openJson.data.sheets.length >= 1)
-  assert.ok(Object.keys(openJson.data.cells).length > 0)
+  child.stdin.write(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/list',
+      params: {},
+    }) + '\n'
+  )
+
+  await done
+  const listResp = responses.find((r) => r.id === 2)
+  assert.ok(listResp?.result?.tools?.length >= 15)
+  assert.ok(listResp.result.tools.some((t) => t.name === 'list_workbooks'))
+  assert.ok(listResp.result.tools.some((t) => t.name === 'format_cells'))
 })
 
 test('client.js registers cleanly via __ModuleLoader__, survives double-eval, and registers sidebar + main slots', () => {
@@ -157,7 +271,6 @@ test('client.js registers cleanly via __ModuleLoader__, survives double-eval, an
   assert.equal(sidebarSlot.meta.id, 'excel-studio')
   assert.equal(sidebarSlot.meta.label, 'Excel Studio')
 
-  // Verify icon component renders an SVG element
   const iconEl = sidebarSlot.component({ size: 20 })
   assert.equal(iconEl.type, 'svg')
   assert.equal(iconEl.props.width, 20)

@@ -16,6 +16,10 @@ build/
 # Excel Studio defensive backups
 .dsh_backup/
 
+# Node.js dependencies
+node_modules/
+package-lock.json
+
 # Operating system artifacts
 .DS_Store
 Thumbs.db

@@ -1238,7 +1238,7 @@
                       ' · Cols: ' +
                       sheet.max_column +
                       (dirtyCount > 0 ? ' · ' + dirtyCount + ' unsaved' : '')
-                  : 'v0.2.0'
+                  : 'v0.3.0'
               )
             )
           );
