@@ -169,6 +169,27 @@
     '.dsh-xl-symbol-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }',
     '.dsh-xl-symbol-btn { height: 34px; border: 1px solid rgba(127,127,127,0.3); border-radius: 4px; background: transparent; color: inherit; font-size: 16px; cursor: pointer; }',
     '.dsh-xl-symbol-btn:hover { background: rgba(16,124,65,0.14); border-color: #107c41; }',
+    '.dsh-xl-fbar { position: relative; }',
+    '.dsh-xl-ac-wrap { position: absolute; left: 160px; top: 100%; z-index: 65; display: flex; flex-direction: column; gap: 4px; pointer-events: auto; }',
+    '.dsh-xl-param-tip {',
+    '  background: var(--dsw-alias-bg-primary, #fffef5); border: 1px solid #107c41; border-radius: 5px;',
+    '  box-shadow: 0 6px 18px rgba(0,0,0,0.16); padding: 6px 10px; font-size: 12px; max-width: 640px;',
+    '  display: flex; flex-direction: column; gap: 2px;',
+    '}',
+    '.dsh-xl-param-sig { font-family: ui-monospace, monospace; font-size: 12px; color: var(--dsw-alias-text-primary, #1f2328); }',
+    '.dsh-xl-param-active { font-weight: 800; color: #107c41; background: rgba(16,124,65,0.14); padding: 1px 4px; border-radius: 3px; text-decoration: underline; }',
+    '.dsh-xl-ac-list {',
+    '  width: 420px; max-width: 80vw; max-height: 230px; overflow: auto;',
+    '  background: var(--dsw-alias-bg-primary, #ffffff); border: 1px solid #c8c8c8; border-radius: 6px;',
+    '  box-shadow: 0 10px 26px rgba(0,0,0,0.22); padding: 4px;',
+    '}',
+    '.dsh-xl-ac-row {',
+    '  display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px;',
+    '  border-radius: 4px; cursor: pointer; font-size: 12px;',
+    '}',
+    '.dsh-xl-ac-row:hover { background: rgba(16,124,65,0.08); }',
+    '.dsh-xl-ac-row-sel { background: rgba(16,124,65,0.18) !important; color: #107c41; font-weight: 600; }',
+    '.dsh-xl-ac-desc { padding: 5px 8px; border-top: 1px solid rgba(127,127,127,0.18); font-size: 11px; color: var(--dsw-alias-text-secondary, #555); background: var(--dsw-alias-bg-secondary, #f8f9fa); }',
     '.dsh-xl-btn-primary { height: 28px; padding: 0 14px; border-radius: 4px; border: none; background: #107c41; color: #ffffff; font-weight: 600; font-size: 12px; cursor: pointer; }',
     '.dsh-xl-btn-primary:hover { background: #0d6635; }',
   ].join('\n');
@@ -814,6 +835,99 @@
     return Object.keys(refs);
   }
 
+  var POPULAR_FUNCS = ['SUM', 'AVERAGE', 'IF', 'VLOOKUP', 'XLOOKUP', 'COUNTIF', 'SUMIF', 'INDEX'];
+
+  function getFormulaAutocomplete(formulaStr, namedRanges) {
+    var s = String(formulaStr || '');
+    if (!s.startsWith('=')) return null;
+    // Skip if cursor is inside an unclosed string literal
+    var inStr = false;
+    for (var qi = 1; qi < s.length; qi++) {
+      if (s.charAt(qi) === '"') inStr = !inStr;
+    }
+    if (inStr) return null;
+
+    if (s.trim() === '=') {
+      var pop = FUNCTION_CATALOG.filter(function (fn) { return POPULAR_FUNCS.indexOf(fn.name) !== -1; });
+      return { prefix: '', startIndex: s.length, items: pop };
+    }
+
+    var m = /(?:^|[=(,;+\-*/^&<>!\s])([A-Za-z_][A-Za-z0-9_.]*)$/.exec(s);
+    if (!m) return null;
+    var token = m[1];
+    // Don't autocomplete when typing a cell coordinate like A1 or B12
+    if (/^[A-Za-z]{1,3}\d+$/.test(token)) return null;
+    var upper = token.toUpperCase();
+    var startIndex = s.length - token.length;
+    var starts = [], contains = [];
+
+    for (var i = 0; i < FUNCTION_CATALOG.length; i++) {
+      var fn = FUNCTION_CATALOG[i];
+      if (fn.name.indexOf(upper) === 0) starts.push(fn);
+      else if (fn.name.indexOf(upper) !== -1) contains.push(fn);
+    }
+    if (namedRanges) {
+      var nKeys = Object.keys(namedRanges);
+      for (var nk = 0; nk < nKeys.length; nk++) {
+        var nm = nKeys[nk];
+        if (nm.toUpperCase().indexOf(upper) === 0) {
+          starts.unshift({ name: nm, cat: 'Defined Name', sig: nm + ' → ' + namedRanges[nm], desc: 'Defined named range referencing ' + namedRanges[nm], isName: true });
+        }
+      }
+    }
+    var items = starts.concat(contains).slice(0, 12);
+    if (!items.length) return null;
+    return { prefix: token, startIndex: startIndex, items: items };
+  }
+
+  function getFormulaParamHint(formulaStr) {
+    var s = String(formulaStr || '');
+    if (!s.startsWith('=')) return null;
+    var stack = [];
+    var inStr = false;
+    var i = 1;
+    while (i < s.length) {
+      var ch = s.charAt(i);
+      if (ch === '"') { inStr = !inStr; i++; continue; }
+      if (inStr) { i++; continue; }
+      if (/[A-Za-z_]/.test(ch)) {
+        var j = i;
+        while (j < s.length && /[A-Za-z0-9_.]/.test(s.charAt(j))) j++;
+        var ident = s.slice(i, j).toUpperCase();
+        var k = j;
+        while (k < s.length && s.charAt(k) === ' ') k++;
+        if (k < s.length && s.charAt(k) === '(') {
+          stack.push({ name: ident, argIndex: 0 });
+          i = k + 1;
+          continue;
+        }
+        i = j;
+        continue;
+      }
+      if (ch === '(') {
+        stack.push({ name: '', argIndex: 0 });
+      } else if (ch === ',') {
+        if (stack.length) stack[stack.length - 1].argIndex++;
+      } else if (ch === ')') {
+        if (stack.length) stack.pop();
+      }
+      i++;
+    }
+    for (var si = stack.length - 1; si >= 0; si--) {
+      var top = stack[si];
+      if (!top.name) continue;
+      for (var fi = 0; fi < FUNCTION_CATALOG.length; fi++) {
+        if (FUNCTION_CATALOG[fi].name === top.name) {
+          var fn = FUNCTION_CATALOG[fi];
+          var inner = fn.sig.slice(fn.sig.indexOf('(') + 1, fn.sig.lastIndexOf(')'));
+          var params = inner ? inner.split(',').map(function (p) { return p.trim(); }) : [];
+          return { fn: fn, params: params, activeArgIndex: top.argIndex };
+        }
+      }
+    }
+    return null;
+  }
+
   function evalExcelFormula(expr, getRawFn, depth, namedRanges) {
     if (depth > 12) return '#REF!';
     var body = String(expr || '').trim();
@@ -1112,6 +1226,10 @@
           var sShowNew = useState(false), showNewForm = sShowNew[0], setShowNewForm = sShowNew[1];
           var sNewName = useState('Book1.xlsx'), newFilename = sNewName[0], setNewFilename = sNewName[1];
           var sOpenPath = useState(''), openPathInput = sOpenPath[0], setOpenPathInput = sOpenPath[1];
+          var formulaInputRef = useRef(null);
+          var sAcIndex = useState(0), acIndex = sAcIndex[0], setAcIndex = sAcIndex[1];
+          var sAcDismissed = useState(false), acDismissed = sAcDismissed[0], setAcDismissed = sAcDismissed[1];
+          var sFormulaFocused = useState(false), formulaFocused = sFormulaFocused[0], setFormulaFocused = sFormulaFocused[1];
 
           var sPivotOpen = useState(false), pivotOpen = sPivotOpen[0], setPivotOpen = sPivotOpen[1];
           var sPivotCfg = useState({ rowCol: 1, valCol: 2, agg: 'SUM' }), pivotCfg = sPivotCfg[0], setPivotCfg = sPivotCfg[1];
@@ -1949,6 +2067,53 @@
             return true;
           });
 
+          var isTypingFormula = Boolean(sheet && !sheetProtected && (editing || formulaFocused) && typeof draftValue === 'string' && draftValue.startsWith('='));
+          var acData = isTypingFormula && !acDismissed ? getFormulaAutocomplete(draftValue, namedRanges) : null;
+          var paramHint = isTypingFormula ? getFormulaParamHint(draftValue) : null;
+          var safeAcIdx = acData && acData.items.length ? Math.min(acIndex, acData.items.length - 1) : 0;
+
+          var applyAutocompleteItem = function (item) {
+            if (!acData || !item) return;
+            var insertion = item.isName ? item.name : (item.name + '(');
+            var nextVal = draftValue.slice(0, acData.startIndex) + insertion;
+            setDraftValue(nextVal);
+            var u = {}; u[activeCoord] = nextVal;
+            setCellValuesBatch(u);
+            setAcIndex(0);
+            setAcDismissed(false);
+            if (formulaFocused && formulaInputRef.current) {
+              setTimeout(function () { if (formulaInputRef.current) formulaInputRef.current.focus(); }, 0);
+            }
+          };
+
+          var handleFormulaKeyDown = function (e, rowIdx, colIdx) {
+            if (acData && acData.items.length) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setAcIndex(function (i) { return (i + 1) % acData.items.length; });
+                return;
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setAcIndex(function (i) { return (i - 1 + acData.items.length) % acData.items.length; });
+                return;
+              }
+              if (e.key === 'Tab' || (e.key === 'Enter' && acData.prefix.length > 0)) {
+                e.preventDefault();
+                applyAutocompleteItem(acData.items[safeAcIdx]);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setAcDismissed(true);
+                return;
+              }
+            }
+            if (e.key === 'Enter') { e.preventDefault(); setFormulaFocused(false); selectCell(rowIdx + 1, colIdx, false, false); }
+            else if (e.key === 'Tab') { e.preventDefault(); setFormulaFocused(false); selectCell(rowIdx, colIdx + 1, false, false); }
+            else if (e.key === 'Escape') { setDraftValue(getCellRaw(activeCoord)); setEditing(false); setFormulaFocused(false); }
+          };
+
           return h(
             'div',
             { className: 'dsh-xl-root', 'data-testid': 'excel-studio-panel' },
@@ -2499,15 +2664,72 @@
                   h('button', { type: 'button', className: 'dsh-xl-rbtn', title: 'Enter', onClick: function () { var u = {}; u[activeCoord] = draftValue; setCellValuesBatch(u); setEditing(false); } }, '✓'),
                   h('button', { type: 'button', className: 'dsh-xl-rbtn', title: 'Insert Function (125+ Excel functions)', style: { fontStyle: 'italic', fontFamily: 'Georgia, serif', fontWeight: 700, color: '#107c41' }, onClick: function () { setFxCategory('All'); setFxModalOpen(true); } }, 'fx'),
                   h('input', {
+                    ref: formulaInputRef,
                     className: 'dsh-xl-finput', value: draftValue, readOnly: sheetProtected,
-                    placeholder: 'Enter value or any Excel formula (e.g. =IF(SUM(A1:A5)>100, "High", "Low"))',
-                    onChange: function (e) { var v = e.target.value; setDraftValue(v); var u = {}; u[activeCoord] = v; setCellValuesBatch(u); },
-                    onKeyDown: function (e) {
-                      if (e.key === 'Enter') { e.preventDefault(); selectCell(selStart.row + 1, selStart.col, false, false); }
-                      else if (e.key === 'Tab') { e.preventDefault(); selectCell(selStart.row, selStart.col + 1, false, false); }
-                      else if (e.key === 'Escape') { setDraftValue(getCellRaw(activeCoord)); setEditing(false); }
+                    placeholder: 'Enter value or type = for live function & parameter recommendations...',
+                    onFocus: function () { setFormulaFocused(true); setAcDismissed(false); },
+                    onBlur: function () { setTimeout(function () { setFormulaFocused(false); }, 120); },
+                    onChange: function (e) {
+                      var v = e.target.value;
+                      setDraftValue(v); setAcIndex(0); setAcDismissed(false);
+                      var u = {}; u[activeCoord] = v; setCellValuesBatch(u);
                     },
-                  })
+                    onKeyDown: function (e) { handleFormulaKeyDown(e, selStart.row, selStart.col); },
+                  }),
+                  (paramHint || (acData && acData.items.length))
+                    ? h(
+                        'div', { className: 'dsh-xl-ac-wrap' },
+                        paramHint
+                          ? h(
+                              'div', { className: 'dsh-xl-param-tip' },
+                              h(
+                                'div', { className: 'dsh-xl-param-sig' },
+                                h('strong', { style: { color: activeTheme.primary } }, paramHint.fn.name),
+                                '(',
+                                paramHint.params.map(function (p, idx) {
+                                  var activeIdx = Math.min(paramHint.activeArgIndex, Math.max(0, paramHint.params.length - 1));
+                                  var isCur = idx === activeIdx;
+                                  return h(
+                                    'span', { key: idx },
+                                    idx > 0 ? ', ' : '',
+                                    h('span', { className: isCur ? 'dsh-xl-param-active' : '' }, p)
+                                  );
+                                }),
+                                ')'
+                              ),
+                              h('div', { style: { fontSize: '11px', opacity: 0.78 } }, paramHint.fn.desc)
+                            )
+                          : null,
+                        acData && acData.items.length
+                          ? h(
+                              'div', { className: 'dsh-xl-ac-list', role: 'listbox' },
+                              acData.items.map(function (item, idx) {
+                                var sel = idx === safeAcIdx;
+                                return h(
+                                  'div',
+                                  {
+                                    key: item.name, role: 'option', 'aria-selected': sel,
+                                    className: 'dsh-xl-ac-row ' + (sel ? 'dsh-xl-ac-row-sel' : ''),
+                                    onMouseDown: function (ev) { ev.preventDefault(); applyAutocompleteItem(item); },
+                                    onMouseEnter: function () { setAcIndex(idx); },
+                                  },
+                                  h('span', null,
+                                    h('span', { style: { fontStyle: 'italic', fontFamily: 'Georgia, serif', fontWeight: 700, color: activeTheme.primary, marginRight: '6px' } }, item.isName ? '🏷' : 'fx'),
+                                    h('strong', null, item.name)
+                                  ),
+                                  h('span', { style: { fontSize: '10px', opacity: 0.65 } }, item.cat)
+                                );
+                              }),
+                              acData.items[safeAcIdx]
+                                ? h('div', { className: 'dsh-xl-ac-desc' },
+                                    h('div', { style: { fontFamily: 'ui-monospace, monospace', color: activeTheme.primary, fontWeight: 600 } }, acData.items[safeAcIdx].sig),
+                                    h('div', null, acData.items[safeAcIdx].desc + '  (Tab / Enter to insert)')
+                                  )
+                                : null
+                            )
+                          : null
+                      )
+                    : null
                 )
               : null,
 
@@ -2644,13 +2866,13 @@
                                 isActive && editing
                                   ? h('input', {
                                       className: 'dsh-xl-editor-input', autoFocus: true, value: draftValue,
-                                      onChange: function (e) { var v = e.target.value; setDraftValue(v); var u = {}; u[coord] = v; setCellValuesBatch(u); },
-                                      onBlur: function () { setEditing(false); },
-                                      onKeyDown: function (e) {
-                                        if (e.key === 'Enter') { e.preventDefault(); selectCell(r + 1, c, false, false); }
-                                        else if (e.key === 'Tab') { e.preventDefault(); selectCell(r, c + 1, false, false); }
-                                        else if (e.key === 'Escape') { setDraftValue(getCellRaw(coord)); setEditing(false); }
+                                      onChange: function (e) {
+                                        var v = e.target.value;
+                                        setDraftValue(v); setAcIndex(0); setAcDismissed(false);
+                                        var u = {}; u[coord] = v; setCellValuesBatch(u);
                                       },
+                                      onBlur: function () { setTimeout(function () { setEditing(false); }, 120); },
+                                      onKeyDown: function (e) { handleFormulaKeyDown(e, r, c); },
                                     })
                                   : disp,
                                 showAllNotes && noteText ? h('span', { className: 'dsh-xl-note-inline' }, noteText) : null,
@@ -2959,7 +3181,7 @@
                       h('span', null, zoom + '%'),
                       h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, '+')
                     ),
-                    h('span', null, 'v0.6.0')
+                    h('span', null, 'v0.7.0')
                   )
                 )
               : null

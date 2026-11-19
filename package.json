@@ -1,6 +1,6 @@
 {
   "name": "deepseek-office-plugin",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "DeepSeek Excel Studio — self-contained in-app Excel Editor & local Excel automation MCP plugin bundle for DeepSeek Harness.",
   "type": "module",
   "main": "index.js",
