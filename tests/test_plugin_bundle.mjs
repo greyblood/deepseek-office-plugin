@@ -103,7 +103,7 @@ test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS
     assert.equal(createJson.data.active_sheet, 'Q1')
     const createdPath = createJson.data.file_path
 
-    // 2. Save edits + formatting + notes + merges (with automatic .dsh_backup snapshot)
+    // 2. Save edits + formatting + notes + merges + hyperlinks + row_heights + freeze (with automatic .dsh_backup snapshot)
     const saveRes = await routes.get('/api/excel-studio/save').fetch(
       new Request('http://localhost/api/excel-studio/save', {
         method: 'POST',
@@ -117,13 +117,17 @@ test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS
             { cell: 'A2', value: 'Hosting' },
             { cell: 'B2', value: '450.25' },
             { cell: 'B3', value: '=B2*2' },
+            { cell: 'A3', value: 'Docs' },
           ],
           formats: [
-            { cell: 'A1', bold: true, fill_color: '#1F4E79', font_color: '#FFFFFF' },
+            { cell: 'A1', bold: true, fill_color: '#1F4E79', font_color: '#FFFFFF', indent: 2 },
             { cell: 'B2', number_format: '$#,##0.00', align: 'right' },
           ],
+          row_heights: { 1: 36 },
           notes: { A1: 'Header note' },
+          hyperlinks: { A3: 'https://example.com/docs' },
           merges: ['C1:D1'],
+          freeze: { xSplit: 1, ySplit: 1 },
         }),
       })
     )
@@ -133,8 +137,31 @@ test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS
     assert.ok(saveJson.data.backup_path)
     assert.equal(saveJson.data.cells.A1.style.bold, true)
     assert.equal(saveJson.data.cells.A1.style.fill, '#1F4E79')
+    assert.equal(saveJson.data.cells.A1.style.indent, 2)
+    assert.equal(saveJson.data.cells.A1.note, 'Header note')
+    assert.equal(saveJson.data.cells.A3.hyperlink, 'https://example.com/docs')
     assert.equal(saveJson.data.cells.B2.raw, 450.25)
     assert.equal(saveJson.data.cells.B3.formula, '=B2*2')
+    assert.ok(saveJson.data.merges.includes('C1:D1'))
+    assert.ok(saveJson.data.row_heights[1] >= 34 && saveJson.data.row_heights[1] <= 38)
+    assert.deepEqual(saveJson.data.freeze, { xSplit: 1, ySplit: 1 })
+
+    // 2b. Verify unmerge persists to .xlsx
+    const unmergeRes = await routes.get('/api/excel-studio/save').fetch(
+      new Request('http://localhost/api/excel-studio/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_path: createdPath,
+          sheet_name: 'Q1',
+          unmerges: ['C1:D1'],
+        }),
+      })
+    )
+    assert.equal(unmergeRes.status, 200)
+    const unmergeJson = await unmergeRes.json()
+    assert.equal(unmergeJson.ok, true)
+    assert.ok(!unmergeJson.data.merges.includes('C1:D1'))
 
     // 3. Summary stats
     const sumRes = await routes.get('/api/excel-studio/summary').fetch(

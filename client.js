@@ -127,11 +127,16 @@
     '  color: var(--dsw-alias-text-secondary, #555555); background: var(--dsw-alias-bg-secondary, #f0f0f0);',
     '  border-right: 1px solid #c6c6c6; border-bottom: 1px solid #d8d8d8;',
     '}',
+    '.dsh-xl-row-resizer { position: absolute; left: 0; bottom: 0; width: 100%; height: 5px; cursor: row-resize; }',
     '.dsh-xl-rowhdr-active { background: rgba(16,124,65,0.16); color: #107c41; font-weight: 700; border-right: 2px solid #107c41; }',
     '.dsh-xl-cell {',
     '  height: 24px; padding: 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
     '  cursor: cell; position: relative; vertical-align: middle; box-sizing: border-box;',
     '}',
+    '.dsh-xl-cell-link { color: #0563c1; text-decoration: underline; cursor: pointer; }',
+    '.dsh-xl-colfilter-btn { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; border: 1px solid rgba(127,127,127,0.35); border-radius: 2px; background: var(--dsw-alias-bg-secondary, #f3f3f3); color: inherit; font-size: 9px; line-height: 1; padding: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }',
+    '.dsh-xl-colfilter-btn-on { background: #107c41; color: #ffffff; border-color: #107c41; }',
+    '.dsh-xl-colfilter-pop { position: absolute; top: 100%; right: 0; z-index: 65; width: 190px; max-height: 240px; overflow: auto; background: var(--dsw-alias-bg-primary, #ffffff); border: 1px solid #c8c8c8; border-radius: 6px; box-shadow: 0 8px 22px rgba(0,0,0,0.2); padding: 6px; display: flex; flex-direction: column; gap: 4px; text-align: left; font-weight: 400; color: var(--dsw-alias-text-primary, #1f1f1f); }',
     '.dsh-xl-gridlines .dsh-xl-cell { border-right: 1px solid var(--dsw-alias-border-subtle, #e2e2e2); border-bottom: 1px solid var(--dsw-alias-border-subtle, #e2e2e2); }',
     '.dsh-xl-cell-inrange { background-color: rgba(16, 124, 65, 0.1) !important; }',
     '.dsh-xl-cell-active { outline: 2px solid #107c41; outline-offset: -2px; z-index: 2; }',
@@ -655,6 +660,158 @@
     N: function (a) { var n = toNum(a[0]); return isNaN(n) ? 0 : n; },
     NA: function () { return '#N/A'; },
     TYPE: function (a) { if (isExcelErr(a[0])) return 16; if (typeof a[0] === 'boolean') return 4; if (typeof a[0] === 'number') return 1; if (Array.isArray(a[0])) return 64; return 2; },
+
+    // Additional Math & Trig (LibreOffice Calc / Excel parity)
+    SUMSQ: function (a) { return numericValues(a).reduce(function (s, v) { return s + v * v; }, 0); },
+    MROUND: function (a) { var n = toNum(a[0]), m = toNum(a[1]); if (m === 0) return 0; if ((n > 0 && m < 0) || (n < 0 && m > 0)) return '#NUM!'; return Math.round(n / m) * m; },
+    QUOTIENT: function (a) { var d = toNum(a[1]); return d === 0 ? '#DIV/0!' : Math.trunc(toNum(a[0]) / d); },
+    SIGN: function (a) { var n = toNum(a[0]); return n > 0 ? 1 : n < 0 ? -1 : 0; },
+    EVEN: function (a) { var n = toNum(a[0]); if (n === 0) return 0; var s = n < 0 ? -1 : 1; var c = Math.ceil(Math.abs(n)); return s * (c % 2 === 0 ? c : c + 1); },
+    ODD: function (a) { var n = toNum(a[0]); if (n === 0) return 1; var s = n < 0 ? -1 : 1; var c = Math.ceil(Math.abs(n)); return s * (c % 2 === 1 ? c : c + 1); },
+    DEGREES: function (a) { return toNum(a[0]) * 180 / Math.PI; },
+    RADIANS: function (a) { return toNum(a[0]) * Math.PI / 180; },
+    ASIN: function (a) { var n = toNum(a[0]); return (n < -1 || n > 1) ? '#NUM!' : Math.asin(n); },
+    ACOS: function (a) { var n = toNum(a[0]); return (n < -1 || n > 1) ? '#NUM!' : Math.acos(n); },
+    ATAN: function (a) { return Math.atan(toNum(a[0])); },
+    ATAN2: function (a) { var x = toNum(a[0]), y = toNum(a[1]); return (x === 0 && y === 0) ? '#DIV/0!' : Math.atan2(y, x); },
+    FACT: function (a) { var n = Math.trunc(toNum(a[0])); if (n < 0) return '#NUM!'; var r = 1; for (var i = 2; i <= n; i++) r *= i; return r; },
+    COMBIN: function (a) {
+      var n = Math.trunc(toNum(a[0])), k = Math.trunc(toNum(a[1]));
+      if (k < 0 || n < 0 || k > n) return '#NUM!';
+      var res = 1; for (var i = 1; i <= k; i++) res = res * (n - i + 1) / i;
+      return Math.round(res);
+    },
+    PERMUT: function (a) {
+      var n = Math.trunc(toNum(a[0])), k = Math.trunc(toNum(a[1]));
+      if (k < 0 || n < 0 || k > n) return '#NUM!';
+      var res = 1; for (var i = 0; i < k; i++) res *= (n - i);
+      return res;
+    },
+    GCD: function (a) {
+      var vals = numericValues(a).map(function (v) { return Math.abs(Math.trunc(v)); });
+      if (!vals.length) return '#VALUE!';
+      var gcd2 = function (x, y) { while (y !== 0) { var t = y; y = x % y; x = t; } return x; };
+      return vals.reduce(gcd2);
+    },
+    LCM: function (a) {
+      var vals = numericValues(a).map(function (v) { return Math.abs(Math.trunc(v)); });
+      if (!vals.length) return '#VALUE!';
+      var gcd2 = function (x, y) { while (y !== 0) { var t = y; y = x % y; x = t; } return x; };
+      return vals.reduce(function (x, y) { return (x === 0 || y === 0) ? 0 : (x * y) / gcd2(x, y); });
+    },
+
+    // Additional Statistical
+    GEOMEAN: function (a) { var vs = numericValues(a); if (!vs.length || vs.some(function (v) { return v <= 0; })) return '#NUM!'; return Math.pow(vs.reduce(function (p, v) { return p * v; }, 1), 1 / vs.length); },
+    HARMEAN: function (a) { var vs = numericValues(a); if (!vs.length || vs.some(function (v) { return v <= 0; })) return '#NUM!'; return vs.length / vs.reduce(function (s, v) { return s + 1 / v; }, 0); },
+    AVEDEV: function (a) { var vs = numericValues(a); if (!vs.length) return '#NUM!'; var m = vs.reduce(function (s, v) { return s + v; }, 0) / vs.length; return vs.reduce(function (s, v) { return s + Math.abs(v - m); }, 0) / vs.length; },
+    DEVSQ: function (a) { var vs = numericValues(a); if (!vs.length) return 0; var m = vs.reduce(function (s, v) { return s + v; }, 0) / vs.length; return vs.reduce(function (s, v) { return s + Math.pow(v - m, 2); }, 0); },
+    CORREL: function (a) {
+      var xs = numericValues([a[0]]), ys = numericValues([a[1]]), n = Math.min(xs.length, ys.length);
+      if (n < 2) return '#DIV/0!';
+      var mx = 0, my = 0; for (var i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; } mx /= n; my /= n;
+      var num = 0, dx = 0, dy = 0;
+      for (var j = 0; j < n; j++) { num += (xs[j] - mx) * (ys[j] - my); dx += Math.pow(xs[j] - mx, 2); dy += Math.pow(ys[j] - my, 2); }
+      return (dx === 0 || dy === 0) ? '#DIV/0!' : num / Math.sqrt(dx * dy);
+    },
+    SLOPE: function (a) {
+      var ys = numericValues([a[0]]), xs = numericValues([a[1]]), n = Math.min(xs.length, ys.length);
+      if (n < 2) return '#DIV/0!';
+      var mx = 0, my = 0; for (var i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; } mx /= n; my /= n;
+      var num = 0, den = 0;
+      for (var j = 0; j < n; j++) { num += (xs[j] - mx) * (ys[j] - my); den += Math.pow(xs[j] - mx, 2); }
+      return den === 0 ? '#DIV/0!' : num / den;
+    },
+    INTERCEPT: function (a) {
+      var ys = numericValues([a[0]]), xs = numericValues([a[1]]), n = Math.min(xs.length, ys.length);
+      if (n < 2) return '#DIV/0!';
+      var sl = EXCEL_FUNCS.SLOPE(a); if (isExcelErr(sl)) return sl;
+      var mx = 0, my = 0; for (var i = 0; i < n; i++) { mx += xs[i]; my += ys[i]; } mx /= n; my /= n;
+      return my - sl * mx;
+    },
+    FORECAST: function (a) {
+      var x = toNum(a[0]);
+      var sl = EXCEL_FUNCS.SLOPE([a[1], a[2]]);
+      var ic = EXCEL_FUNCS.INTERCEPT([a[1], a[2]]);
+      return (isExcelErr(sl) || isExcelErr(ic)) ? '#DIV/0!' : ic + sl * x;
+    },
+
+    // Additional Date & Time
+    WORKDAY: function (a) {
+      var d = parseDateVal(a[0]), days = Math.trunc(toNum(a[1]));
+      if (!d) return '#VALUE!';
+      var cur = new Date(d.getTime()), step = days >= 0 ? 1 : -1, rem = Math.abs(days);
+      while (rem > 0) { cur.setUTCDate(cur.getUTCDate() + step); var w = cur.getUTCDay(); if (w !== 0 && w !== 6) rem--; }
+      return cur.toISOString().slice(0, 10);
+    },
+    WEEKNUM: function (a) {
+      var d = parseDateVal(a[0]); if (!d) return '#VALUE!';
+      var start = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+      var diff = Math.floor((d - start) / 86400000);
+      return Math.floor((diff + start.getUTCDay()) / 7) + 1;
+    },
+    YEARFRAC: function (a) {
+      var d1 = parseDateVal(a[0]), d2 = parseDateVal(a[1]);
+      if (!d1 || !d2) return '#VALUE!';
+      return Math.abs(d2 - d1) / (86400000 * 365.25);
+    },
+
+    // Additional Financial
+    NPER: function (a) {
+      var rate = toNum(a[0]), pmt = toNum(a[1]), pv = toNum(a[2]), fv = toNum(a[3] || 0), type = toNum(a[4] || 0);
+      if (rate === 0) return pmt === 0 ? '#DIV/0!' : -(pv + fv) / pmt;
+      var p = pmt * (1 + rate * type);
+      var num = p - fv * rate, den = p + pv * rate;
+      if (num / den <= 0) return '#NUM!';
+      return Math.log(num / den) / Math.log(1 + rate);
+    },
+    DB: function (a) {
+      var cost = toNum(a[0]), salvage = toNum(a[1]), life = toNum(a[2]), period = Math.trunc(toNum(a[3])), month = a.length > 4 ? toNum(a[4]) : 12;
+      if (cost < 0 || salvage < 0 || life <= 0 || period <= 0) return '#NUM!';
+      var rate = Math.round((1 - Math.pow(salvage / cost, 1 / life)) * 1000) / 1000;
+      var total = 0, dep = 0;
+      for (var p = 1; p <= period; p++) {
+        if (p === 1) dep = cost * rate * month / 12;
+        else if (p === life + 1) dep = (cost - total) * rate * (12 - month) / 12;
+        else dep = (cost - total) * rate;
+        total += dep;
+      }
+      return dep;
+    },
+    DDB: function (a) {
+      var cost = toNum(a[0]), salvage = toNum(a[1]), life = toNum(a[2]), period = Math.trunc(toNum(a[3])), factor = a.length > 4 ? toNum(a[4]) : 2;
+      if (cost < 0 || salvage < 0 || life <= 0 || period <= 0 || factor <= 0) return '#NUM!';
+      var book = cost, dep = 0;
+      for (var p = 1; p <= period; p++) {
+        dep = Math.min(book - salvage, book * (factor / life));
+        if (dep < 0) dep = 0;
+        book -= dep;
+      }
+      return dep;
+    },
+    SYD: function (a) {
+      var cost = toNum(a[0]), salvage = toNum(a[1]), life = toNum(a[2]), per = toNum(a[3]);
+      if (life <= 0 || per <= 0 || per > life) return '#NUM!';
+      return ((cost - salvage) * (life - per + 1) * 2) / (life * (life + 1));
+    },
+
+    // Additional Text
+    DOLLAR: function (a) {
+      var n = toNum(a[0]), d = a.length > 1 ? Math.max(0, Math.trunc(toNum(a[1]))) : 2;
+      var absStr = '$' + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+      return n < 0 ? ('(' + absStr + ')') : absStr;
+    },
+    FIXED: function (a) {
+      var n = toNum(a[0]), d = a.length > 1 ? Math.max(0, Math.trunc(toNum(a[1]))) : 2, noCommas = Boolean(a[2]);
+      return noCommas ? n.toFixed(d) : n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    },
+    NUMBERVALUE: function (a) {
+      var s = String(a[0] || '').trim(), dec = a[1] ? String(a[1]) : '.', grp = a[2] ? String(a[2]) : ',';
+      var norm = s.split(grp).join('').replace(dec, '.');
+      var n = Number(norm);
+      return Number.isFinite(n) ? n : '#VALUE!';
+    },
+    UNICHAR: function (a) { var code = Math.trunc(toNum(a[0])); return code > 0 ? String.fromCodePoint(code) : '#VALUE!'; },
+    UNICODE: function (a) { var s = String(a[0] || ''); return s.length ? s.codePointAt(0) : '#VALUE!'; },
   };
 
   var FUNCTION_CATALOG = [
@@ -662,16 +819,29 @@
     { name: 'SUMIF', cat: 'Math & Trig', sig: 'SUMIF(range, criteria, [sum_range])', desc: 'Adds cells specified by a given condition.' },
     { name: 'SUMIFS', cat: 'Math & Trig', sig: 'SUMIFS(sum_range, criteria_range1, criteria1, ...)', desc: 'Adds cells specified by multiple conditions.' },
     { name: 'SUMPRODUCT', cat: 'Math & Trig', sig: 'SUMPRODUCT(array1, [array2], ...)', desc: 'Returns the sum of the products of corresponding ranges.' },
+    { name: 'SUMSQ', cat: 'Math & Trig', sig: 'SUMSQ(number1, [number2], ...)', desc: 'Returns the sum of the squares of the arguments.' },
     { name: 'PRODUCT', cat: 'Math & Trig', sig: 'PRODUCT(number1, ...)', desc: 'Multiplies all the numbers given as arguments.' },
     { name: 'ABS', cat: 'Math & Trig', sig: 'ABS(number)', desc: 'Returns the absolute value of a number.' },
     { name: 'ROUND', cat: 'Math & Trig', sig: 'ROUND(number, num_digits)', desc: 'Rounds a number to a specified number of digits.' },
     { name: 'ROUNDUP', cat: 'Math & Trig', sig: 'ROUNDUP(number, num_digits)', desc: 'Rounds a number up, away from zero.' },
     { name: 'ROUNDDOWN', cat: 'Math & Trig', sig: 'ROUNDDOWN(number, num_digits)', desc: 'Rounds a number down, toward zero.' },
+    { name: 'MROUND', cat: 'Math & Trig', sig: 'MROUND(number, multiple)', desc: 'Returns a number rounded to the desired multiple.' },
+    { name: 'QUOTIENT', cat: 'Math & Trig', sig: 'QUOTIENT(numerator, denominator)', desc: 'Returns the integer portion of a division.' },
     { name: 'MOD', cat: 'Math & Trig', sig: 'MOD(number, divisor)', desc: 'Returns the remainder after a number is divided by a divisor.' },
     { name: 'POWER', cat: 'Math & Trig', sig: 'POWER(number, power)', desc: 'Returns the result of a number raised to a power.' },
     { name: 'SQRT', cat: 'Math & Trig', sig: 'SQRT(number)', desc: 'Returns a positive square root.' },
+    { name: 'SIGN', cat: 'Math & Trig', sig: 'SIGN(number)', desc: 'Returns the sign of a number (1, 0, or -1).' },
     { name: 'CEILING', cat: 'Math & Trig', sig: 'CEILING(number, significance)', desc: 'Rounds a number up to the nearest multiple of significance.' },
     { name: 'FLOOR', cat: 'Math & Trig', sig: 'FLOOR(number, significance)', desc: 'Rounds a number down to the nearest multiple of significance.' },
+    { name: 'EVEN', cat: 'Math & Trig', sig: 'EVEN(number)', desc: 'Rounds a number up to the nearest even integer.' },
+    { name: 'ODD', cat: 'Math & Trig', sig: 'ODD(number)', desc: 'Rounds a number up to the nearest odd integer.' },
+    { name: 'DEGREES', cat: 'Math & Trig', sig: 'DEGREES(angle)', desc: 'Converts radians into degrees.' },
+    { name: 'RADIANS', cat: 'Math & Trig', sig: 'RADIANS(angle)', desc: 'Converts degrees to radians.' },
+    { name: 'FACT', cat: 'Math & Trig', sig: 'FACT(number)', desc: 'Returns the factorial of a number.' },
+    { name: 'COMBIN', cat: 'Math & Trig', sig: 'COMBIN(number, number_chosen)', desc: 'Returns the number of combinations for a given number of items.' },
+    { name: 'PERMUT', cat: 'Math & Trig', sig: 'PERMUT(number, number_chosen)', desc: 'Returns the number of permutations for a given number of objects.' },
+    { name: 'GCD', cat: 'Math & Trig', sig: 'GCD(number1, [number2], ...)', desc: 'Returns the greatest common divisor.' },
+    { name: 'LCM', cat: 'Math & Trig', sig: 'LCM(number1, [number2], ...)', desc: 'Returns the least common multiple.' },
     { name: 'RANDBETWEEN', cat: 'Math & Trig', sig: 'RANDBETWEEN(bottom, top)', desc: 'Returns a random integer between the numbers you specify.' },
     { name: 'SUBTOTAL', cat: 'Math & Trig', sig: 'SUBTOTAL(function_num, ref1, ...)', desc: 'Returns a subtotal in a list or database.' },
     { name: 'AVERAGE', cat: 'Statistical', sig: 'AVERAGE(number1, [number2], ...)', desc: 'Returns the arithmetic mean of its arguments.' },
@@ -691,6 +861,14 @@
     { name: 'SMALL', cat: 'Statistical', sig: 'SMALL(array, k)', desc: 'Returns the k-th smallest value in a data set.' },
     { name: 'RANK', cat: 'Statistical', sig: 'RANK(number, ref, [order])', desc: 'Returns the rank of a number in a list.' },
     { name: 'PERCENTILE', cat: 'Statistical', sig: 'PERCENTILE(array, k)', desc: 'Returns the k-th percentile of values in a range.' },
+    { name: 'CORREL', cat: 'Statistical', sig: 'CORREL(array1, array2)', desc: 'Returns the correlation coefficient between two data sets.' },
+    { name: 'SLOPE', cat: 'Statistical', sig: 'SLOPE(known_ys, known_xs)', desc: 'Returns the slope of the linear regression line.' },
+    { name: 'INTERCEPT', cat: 'Statistical', sig: 'INTERCEPT(known_ys, known_xs)', desc: 'Returns the y-intercept of the linear regression line.' },
+    { name: 'FORECAST', cat: 'Statistical', sig: 'FORECAST(x, known_ys, known_xs)', desc: 'Predicts a future value along a linear trend.' },
+    { name: 'GEOMEAN', cat: 'Statistical', sig: 'GEOMEAN(number1, [number2], ...)', desc: 'Returns the geometric mean.' },
+    { name: 'HARMEAN', cat: 'Statistical', sig: 'HARMEAN(number1, [number2], ...)', desc: 'Returns the harmonic mean.' },
+    { name: 'AVEDEV', cat: 'Statistical', sig: 'AVEDEV(number1, [number2], ...)', desc: 'Returns the average of the absolute deviations from the mean.' },
+    { name: 'DEVSQ', cat: 'Statistical', sig: 'DEVSQ(number1, [number2], ...)', desc: 'Returns the sum of squares of deviations.' },
     { name: 'IF', cat: 'Logical', sig: 'IF(logical_test, value_if_true, [value_if_false])', desc: 'Checks a condition and returns one value if TRUE, another if FALSE.' },
     { name: 'IFS', cat: 'Logical', sig: 'IFS(test1, val1, [test2, val2], ...)', desc: 'Checks multiple conditions and returns the first TRUE match.' },
     { name: 'IFERROR', cat: 'Logical', sig: 'IFERROR(value, value_if_error)', desc: 'Returns value_if_error if expression is an error.' },
@@ -716,6 +894,9 @@
     { name: 'TRIM', cat: 'Text', sig: 'TRIM(text)', desc: 'Removes extra spaces from text.' },
     { name: 'SUBSTITUTE', cat: 'Text', sig: 'SUBSTITUTE(text, old_text, new_text)', desc: 'Substitutes new text for old text in a string.' },
     { name: 'TEXT', cat: 'Text', sig: 'TEXT(value, format_text)', desc: 'Formats a number and converts it to text.' },
+    { name: 'DOLLAR', cat: 'Text', sig: 'DOLLAR(number, [decimals])', desc: 'Converts a number to currency text format.' },
+    { name: 'FIXED', cat: 'Text', sig: 'FIXED(number, [decimals], [no_commas])', desc: 'Formats a number as text with a fixed number of decimals.' },
+    { name: 'NUMBERVALUE', cat: 'Text', sig: 'NUMBERVALUE(text, [decimal_sep], [group_sep])', desc: 'Converts text to a number in a locale-independent way.' },
     { name: 'TODAY', cat: 'Date & Time', sig: 'TODAY()', desc: 'Returns the current date (YYYY-MM-DD).' },
     { name: 'NOW', cat: 'Date & Time', sig: 'NOW()', desc: 'Returns the current date and time.' },
     { name: 'DATE', cat: 'Date & Time', sig: 'DATE(year, month, day)', desc: 'Returns a date from year, month, and day.' },
@@ -724,14 +905,21 @@
     { name: 'DAY', cat: 'Date & Time', sig: 'DAY(date)', desc: 'Returns the day of the month (1-31).' },
     { name: 'DATEDIF', cat: 'Date & Time', sig: 'DATEDIF(start_date, end_date, unit)', desc: 'Calculates days (D), months (M), or years (Y) between two dates.' },
     { name: 'NETWORKDAYS', cat: 'Date & Time', sig: 'NETWORKDAYS(start_date, end_date)', desc: 'Returns the number of whole workdays between two dates.' },
+    { name: 'WORKDAY', cat: 'Date & Time', sig: 'WORKDAY(start_date, days)', desc: 'Returns the date before or after a specified number of workdays.' },
+    { name: 'WEEKNUM', cat: 'Date & Time', sig: 'WEEKNUM(date)', desc: 'Returns the week number of a specific date in the year.' },
+    { name: 'YEARFRAC', cat: 'Date & Time', sig: 'YEARFRAC(start_date, end_date)', desc: 'Returns the year fraction representing the number of whole days between dates.' },
     { name: 'EDATE', cat: 'Date & Time', sig: 'EDATE(start_date, months)', desc: 'Returns the date that is the indicated number of months before or after.' },
     { name: 'EOMONTH', cat: 'Date & Time', sig: 'EOMONTH(start_date, months)', desc: 'Returns the last day of the month.' },
     { name: 'PMT', cat: 'Financial', sig: 'PMT(rate, nper, pv, [fv], [type])', desc: 'Calculates the periodic payment for a loan.' },
     { name: 'FV', cat: 'Financial', sig: 'FV(rate, nper, pmt, [pv], [type])', desc: 'Returns the future value of an investment.' },
     { name: 'PV', cat: 'Financial', sig: 'PV(rate, nper, pmt, [fv], [type])', desc: 'Returns the present value of an investment.' },
+    { name: 'NPER', cat: 'Financial', sig: 'NPER(rate, pmt, pv, [fv], [type])', desc: 'Returns the number of periods for an investment.' },
     { name: 'NPV', cat: 'Financial', sig: 'NPV(rate, value1, [value2], ...)', desc: 'Calculates the net present value of an investment.' },
     { name: 'IRR', cat: 'Financial', sig: 'IRR(values, [guess])', desc: 'Returns the internal rate of return for a series of cash flows.' },
     { name: 'SLN', cat: 'Financial', sig: 'SLN(cost, salvage, life)', desc: 'Returns the straight-line depreciation of an asset.' },
+    { name: 'DB', cat: 'Financial', sig: 'DB(cost, salvage, life, period, [month])', desc: 'Returns fixed-declining balance depreciation.' },
+    { name: 'DDB', cat: 'Financial', sig: 'DDB(cost, salvage, life, period, [factor])', desc: 'Returns double-declining balance depreciation.' },
+    { name: 'SYD', cat: 'Financial', sig: 'SYD(cost, salvage, life, per)', desc: 'Returns sum-of-years digits depreciation.' },
     { name: 'ISBLANK', cat: 'Information', sig: 'ISBLANK(value)', desc: 'Returns TRUE if the value is blank.' },
     { name: 'ISNUMBER', cat: 'Information', sig: 'ISNUMBER(value)', desc: 'Returns TRUE if the value is a number.' },
     { name: 'ISTEXT', cat: 'Information', sig: 'ISTEXT(value)', desc: 'Returns TRUE if the value is text.' },
@@ -1088,6 +1276,51 @@
     }
   }
 
+  function shiftFormulaRefs(formula, dRow, dCol) {
+    if (typeof formula !== 'string' || !formula.startsWith('=') || (dRow === 0 && dCol === 0)) return formula;
+    var out = '';
+    var i = 0;
+    var len = formula.length;
+    while (i < len) {
+      if (formula[i] === '"') {
+        var j = i + 1;
+        while (j < len) {
+          if (formula[j] === '"' && formula[j + 1] === '"') { j += 2; continue; }
+          if (formula[j] === '"') { j++; break; }
+          j++;
+        }
+        out += formula.slice(i, j);
+        i = j;
+        continue;
+      }
+      var rest = formula.slice(i);
+      var m = /^(\$?)([A-Za-z]{1,3})(\$?)(\d+)/.exec(rest);
+      if (m) {
+        var prevCh = i > 0 ? formula[i - 1] : '';
+        var nextCh = formula[i + m[0].length] || '';
+        if (!/[A-Za-z0-9_.]/.test(prevCh) && !/[A-Za-z0-9_(]/.test(nextCh)) {
+          var colAbs = m[1] === '$';
+          var colIdx = colLetterToIndex(m[2].toUpperCase());
+          var rowAbs = m[3] === '$';
+          var rowIdx = parseInt(m[4], 10);
+          var newCol = colAbs ? colIdx : Math.max(1, colIdx + dCol);
+          var newRow = rowAbs ? rowIdx : Math.max(1, rowIdx + dRow);
+          out += (colAbs ? '$' : '') + colIndexToLetter(newCol) + (rowAbs ? '$' : '') + String(newRow);
+          i += m[0].length;
+          continue;
+        }
+      }
+      out += formula[i];
+      i++;
+    }
+    return out;
+  }
+
+  function canInsertFormulaRef(draft) {
+    if (typeof draft !== 'string' || !draft.startsWith('=')) return false;
+    return /[=(,+\-*/^&<>:]\s*$/.test(draft);
+  }
+
   function formatDisplayValue(val, numFmt) {
     if (val === '' || val === null || val === undefined) return '';
     if (isExcelErr(val)) return val;
@@ -1168,12 +1401,18 @@
           var sColWidths = useState({}), pendingColWidths = sColWidths[0], setPendingColWidths = sColWidths[1];
           var sNotes = useState({}), pendingNotes = sNotes[0], setPendingNotes = sNotes[1];
           var sMerges = useState([]), pendingMerges = sMerges[0], setPendingMerges = sMerges[1];
+          var sUnmerges = useState([]), pendingUnmerges = sUnmerges[0], setPendingUnmerges = sUnmerges[1];
+          var sFreezeDirty = useState(false), freezeDirty = sFreezeDirty[0], setFreezeDirty = sFreezeDirty[1];
+          var sRowHtDirty = useState(false), rowHeightsDirty = sRowHtDirty[0], setRowHeightsDirty = sRowHtDirty[1];
+          var sLinkDirty = useState(false), hyperlinksDirty = sLinkDirty[0], setHyperlinksDirty = sLinkDirty[1];
 
           var sUndo = useState([]), undoStack = sUndo[0], setUndoStack = sUndo[1];
           var sRedo = useState([]), redoStack = sRedo[0], setRedoStack = sRedo[1];
           var clipboardRef = useRef(null);
+          var clipboardOriginRef = useRef(null);
           var clipboardStylesRef = useRef(null);
           var formatPainterRef = useRef(null);
+          var formulaRefDragRef = useRef(null);
           var fileInputRef = useRef(null);
           var sPainterOn = useState(false), painterActive = sPainterOn[0], setPainterActive = sPainterOn[1];
 
@@ -1211,6 +1450,8 @@
           var sCondRule = useState(null), condRule = sCondRule[0], setCondRule = sCondRule[1];
           var sFilterOn = useState(false), autoFilterOn = sFilterOn[0], setAutoFilterOn = sFilterOn[1];
           var sFilterQuery = useState(''), filterQuery = sFilterQuery[0], setFilterQuery = sFilterQuery[1];
+          var sColFilters = useState({}), colFilters = sColFilters[0], setColFilters = sColFilters[1];
+          var sFilterMenuCol = useState(null), filterMenuCol = sFilterMenuCol[0], setFilterMenuCol = sFilterMenuCol[1];
 
           // Modals / Drawers
           var sFxOpen = useState(false), fxModalOpen = sFxOpen[0], setFxModalOpen = sFxOpen[1];
@@ -1257,8 +1498,8 @@
             stEl.textContent = '@page { size: ' + printCfg.paper + ' ' + printCfg.orientation + '; margin: ' + mVal + '; }';
           }, [printCfg]);
           useEffect(function () {
-            var onUp = function () { isDraggingRef.current = false; isFillingRef.current = false; };
-            var onClick = function () { setCtxMenu(null); };
+            var onUp = function () { isDraggingRef.current = false; isFillingRef.current = false; formulaRefDragRef.current = null; };
+            var onClick = function () { setCtxMenu(null); setFilterMenuCol(null); };
             window.addEventListener('mouseup', onUp);
             window.addEventListener('click', onClick);
             return function () { window.removeEventListener('mouseup', onUp); window.removeEventListener('click', onClick); };
@@ -1271,9 +1512,23 @@
             Object.keys(pendingFormats).length +
             Object.keys(pendingColWidths).length +
             Object.keys(pendingNotes).length +
-            pendingMerges.length;
+            pendingMerges.length +
+            pendingUnmerges.length +
+            (rowHeightsDirty ? 1 : 0) +
+            (hyperlinksDirty ? 1 : 0) +
+            (freezeDirty ? 1 : 0);
 
           useEffect(function () { setNameBoxText(formatRangeLabel(selStart, selEnd)); }, [selStart, selEnd]);
+
+          var getCellNote = useCallback(function (coord) {
+            if (Object.prototype.hasOwnProperty.call(pendingNotes, coord)) return pendingNotes[coord] || '';
+            return (sheet && sheet.cells && sheet.cells[coord] && sheet.cells[coord].note) || '';
+          }, [sheet, pendingNotes]);
+
+          var getCellHyperlink = useCallback(function (coord) {
+            if (Object.prototype.hasOwnProperty.call(hyperlinks, coord)) return hyperlinks[coord] || '';
+            return (sheet && sheet.cells && sheet.cells[coord] && sheet.cells[coord].hyperlink) || '';
+          }, [sheet, hyperlinks]);
 
           var getCellRaw = useCallback(function (coord) {
             if (Object.prototype.hasOwnProperty.call(pendingEdits, coord)) return pendingEdits[coord];
@@ -1327,6 +1582,22 @@
             setPendingFormats(next.formats);
           }, [redoStack, pendingEdits, pendingFormats]);
 
+          var hydrateSheetState = useCallback(function (data) {
+            setSheet(data);
+            setPendingEdits({}); setPendingFormats({}); setPendingColWidths({}); setPendingNotes({});
+            setPendingMerges([]); setPendingUnmerges([]);
+            setRowHeights((data && data.row_heights) || {});
+            setRowHeightsDirty(false);
+            setHyperlinks({});
+            setHyperlinksDirty(false);
+            var frz = (data && data.freeze) || {};
+            setFreezeTopRow(Boolean(frz.ySplit && frz.ySplit > 0));
+            setFreezeFirstCol(Boolean(frz.xSplit && frz.xSplit > 0));
+            setFreezeDirty(false);
+            setColFilters({});
+            setFilterMenuCol(null);
+          }, []);
+
           var openWorkbook = useCallback(function (filePath, sheetName) {
             if (!filePath) return;
             setLoading(true); setError(''); setSummary(null); setChartData(null); setFileMenuOpen(false);
@@ -1336,8 +1607,7 @@
               body: JSON.stringify({ file_path: filePath, sheet_name: sheetName }),
             })
               .then(function (data) {
-                setSheet(data);
-                setPendingEdits({}); setPendingFormats({}); setPendingColWidths({}); setPendingNotes({}); setPendingMerges([]);
+                hydrateSheetState(data);
                 setUndoStack([]); setRedoStack([]);
                 setSelStart({ row: 1, col: 1 }); setSelEnd({ row: 1, col: 1 }); setEditing(false);
                 var first = data.cells && data.cells.A1;
@@ -1346,7 +1616,7 @@
               })
               .catch(function (err) { setError(err.message || String(err)); })
               .finally(function () { setLoading(false); });
-          }, []);
+          }, [hydrateSheetState]);
 
           var refreshWorkbooks = useCallback(function (autoOpenFirst) {
             setLoading(true); setError('');
@@ -1449,6 +1719,7 @@
               styleRows.push(rowSt);
             }
             clipboardRef.current = rows;
+            clipboardOriginRef.current = { row: selNorm.r1, col: selNorm.c1, isCut: Boolean(isCut) };
             clipboardStylesRef.current = styleRows;
             if (isCut) setCellValuesBatch(clearMap);
             setNotice((isCut ? 'Cut ' : 'Copied ') + formatRangeLabel(selStart, selEnd));
@@ -1458,13 +1729,19 @@
             if (!sheet || !clipboardRef.current) return;
             var pasteMode = mode || 'all';
             var matrix = clipboardRef.current;
+            var origin = clipboardOriginRef.current || { row: selStart.row, col: selStart.col, isCut: false };
+            var dRow = origin.isCut ? 0 : (selStart.row - origin.row);
+            var dCol = origin.isCut ? 0 : (selStart.col - origin.col);
             var sMatrix = clipboardStylesRef.current;
             if (pasteMode === 'all' || pasteMode === 'values') {
               var updates = {};
               for (var r = 0; r < matrix.length; r++) {
                 for (var c = 0; c < matrix[r].length; c++) {
                   var item = matrix[r][c];
-                  updates[makeCoord(selStart.row + r, selStart.col + c)] = pasteMode === 'values' ? item.disp : item.raw;
+                  var val = pasteMode === 'values'
+                    ? item.disp
+                    : (typeof item.raw === 'string' && item.raw.startsWith('=') ? shiftFormulaRefs(item.raw, dRow, dCol) : item.raw);
+                  updates[makeCoord(selStart.row + r, selStart.col + c)] = val;
                 }
               }
               setCellValuesBatch(updates);
@@ -1514,12 +1791,20 @@
             if (dir === 'down') {
               for (var c = selNorm.c1; c <= selNorm.c2; c++) {
                 var topVal = getCellRaw(makeCoord(selNorm.r1, c));
-                for (var r = selNorm.r1 + 1; r <= selNorm.r2; r++) updates[makeCoord(r, c)] = topVal;
+                for (var r = selNorm.r1 + 1; r <= selNorm.r2; r++) {
+                  updates[makeCoord(r, c)] = (typeof topVal === 'string' && topVal.startsWith('='))
+                    ? shiftFormulaRefs(topVal, r - selNorm.r1, 0)
+                    : topVal;
+                }
               }
             } else if (dir === 'right') {
               for (var r2 = selNorm.r1; r2 <= selNorm.r2; r2++) {
                 var leftVal = getCellRaw(makeCoord(r2, selNorm.c1));
-                for (var c2 = selNorm.c1 + 1; c2 <= selNorm.c2; c2++) updates[makeCoord(r2, c2)] = leftVal;
+                for (var c2 = selNorm.c1 + 1; c2 <= selNorm.c2; c2++) {
+                  updates[makeCoord(r2, c2)] = (typeof leftVal === 'string' && leftVal.startsWith('='))
+                    ? shiftFormulaRefs(leftVal, 0, c2 - selNorm.c1)
+                    : leftVal;
+                }
               }
             } else if (dir === 'series') {
               var stepStr = window.prompt('Fill Series step value (e.g. 1, 5, 10):', '1');
@@ -1865,7 +2150,7 @@
             if (!sheet || saving) return;
             var editList = Object.keys(pendingEdits).map(function (coord) { return { cell: coord, value: pendingEdits[coord] }; });
             var formatList = Object.keys(pendingFormats).map(function (coord) { return Object.assign({ cell: coord }, pendingFormats[coord]); });
-            if (!targetPath && !editList.length && !formatList.length && !Object.keys(pendingColWidths).length && !Object.keys(pendingNotes).length && !pendingMerges.length) {
+            if (!targetPath && !editList.length && !formatList.length && !Object.keys(pendingColWidths).length && !Object.keys(pendingNotes).length && !pendingMerges.length && !pendingUnmerges.length && !rowHeightsDirty && !hyperlinksDirty && !freezeDirty) {
               setNotice('All changes are already saved.'); return;
             }
             setSaving(true); setError(''); setNotice('');
@@ -1875,18 +2160,24 @@
               body: JSON.stringify({
                 file_path: sheet.file_path, target_path: targetPath || undefined,
                 sheet_name: sheet.active_sheet, edits: editList, formats: formatList,
-                column_widths: pendingColWidths, notes: pendingNotes, merges: pendingMerges,
+                column_widths: pendingColWidths,
+                row_heights: rowHeightsDirty ? rowHeights : undefined,
+                notes: pendingNotes,
+                hyperlinks: hyperlinksDirty ? hyperlinks : undefined,
+                merges: pendingMerges,
+                unmerges: pendingUnmerges,
+                freeze: freezeDirty ? { xSplit: freezeFirstCol ? 1 : 0, ySplit: freezeTopRow ? 1 : 0 } : undefined,
               }),
             })
               .then(function (data) {
-                setSheet(data); setPendingEdits({}); setPendingFormats({}); setPendingColWidths({}); setPendingNotes({}); setPendingMerges([]);
+                hydrateSheetState(data);
                 setEditing(false);
                 if (targetPath) refreshWorkbooks(false);
                 setNotice('Saved ' + data.filename + (data.backup_path ? ' (backup created)' : ''));
               })
               .catch(function (err) { setError(err.message || String(err)); })
               .finally(function () { setSaving(false); });
-          }, [sheet, saving, pendingEdits, pendingFormats, pendingColWidths, pendingNotes, pendingMerges, refreshWorkbooks]);
+          }, [sheet, saving, pendingEdits, pendingFormats, pendingColWidths, pendingNotes, pendingMerges, pendingUnmerges, rowHeights, rowHeightsDirty, hyperlinks, hyperlinksDirty, freezeTopRow, freezeFirstCol, freezeDirty, hydrateSheetState, refreshWorkbooks]);
 
           var handleExportCsv = function () {
             if (!sheet) return;
@@ -2040,15 +2331,47 @@
             window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
           };
 
+          var startRowResize = function (rowNum, startY, currentPx) {
+            var onMove = function (ev) {
+              var newPx = Math.max(18, Math.min(260, Math.round(currentPx + (ev.clientY - startY))));
+              setRowHeights(function (cur) { var n = Object.assign({}, cur); n[rowNum] = newPx; return n; });
+              setRowHeightsDirty(true);
+            };
+            var onUp = function () { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+            window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+          };
+
+          var handleAutoFitColIndex = function (colIdx) {
+            if (!sheet) return;
+            var letter = colIndexToLetter(colIdx);
+            var maxLen = 8, maxR = (sheet && sheet.row_count) || 40;
+            for (var r = 1; r <= maxR; r++) {
+              var d = String(getCellDisplay(makeCoord(r, colIdx)) || '');
+              if (d.length > maxLen) maxLen = d.length;
+            }
+            var w = Math.min(48, Math.max(10, maxLen + 3));
+            setPendingColWidths(function (cur) { var n = Object.assign({}, cur); n[letter] = w; return n; });
+            setNotice('AutoFit column ' + letter + ' to width ' + w);
+          };
+
           var handleFillDragEnter = function (targetRow, targetCol) {
             if (!isFillingRef.current || !sheet) return;
             var baseRaw = getCellRaw(activeCoord), baseNum = Number(baseRaw), isNum = baseRaw !== '' && Number.isFinite(baseNum);
+            var isFormula = typeof baseRaw === 'string' && baseRaw.startsWith('=');
             var updates = {};
             if (targetRow > selStart.row) {
-              for (var r = selStart.row + 1; r <= targetRow; r++) updates[makeCoord(r, selStart.col)] = isNum ? String(baseNum + (r - selStart.row)) : baseRaw;
+              for (var r = selStart.row + 1; r <= targetRow; r++) {
+                updates[makeCoord(r, selStart.col)] = isFormula
+                  ? shiftFormulaRefs(baseRaw, r - selStart.row, 0)
+                  : (isNum ? String(baseNum + (r - selStart.row)) : baseRaw);
+              }
               setSelEnd({ row: targetRow, col: selStart.col });
             } else if (targetCol > selStart.col) {
-              for (var c = selStart.col + 1; c <= targetCol; c++) updates[makeCoord(selStart.row, c)] = isNum ? String(baseNum + (c - selStart.col)) : baseRaw;
+              for (var c = selStart.col + 1; c <= targetCol; c++) {
+                updates[makeCoord(selStart.row, c)] = isFormula
+                  ? shiftFormulaRefs(baseRaw, 0, c - selStart.col)
+                  : (isNum ? String(baseNum + (c - selStart.col)) : baseRaw);
+              }
               setSelEnd({ row: selStart.row, col: targetCol });
             }
             if (Object.keys(updates).length) setCellValuesBatch(updates);
@@ -2238,8 +2561,34 @@
                           ),
                           h('div', { key: 'a2', className: 'dsh-xl-rgroup-row' },
                             ['left', 'center', 'right'].map(function (ha) { return h('button', { key: ha, type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.align === ha ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ align: ha }); } }, ha === 'left' ? '≡L' : ha === 'center' ? '≡C' : '≡R'); }),
-                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Merge & Center selected range', onClick: function () { var r = formatRangeLabel(selStart, selEnd); if (r.indexOf(':') !== -1) { setPendingMerges(function (m) { return m.concat([r]); }); applyFormatToSelection({ align: 'center' }); setNotice('Queued merge for ' + r + ' (click Save).'); } } }, 'Merge'),
-                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Unmerge queued range', onClick: function () { var r = formatRangeLabel(selStart, selEnd); setPendingMerges(function (m) { return m.filter(function (x) { return x !== r; }); }); setNotice('Removed merge for ' + r); } }, 'Unmerge')
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Merge & Center selected range', onClick: function () {
+                              var r = formatRangeLabel(selStart, selEnd);
+                              if (r.indexOf(':') !== -1) {
+                                setPendingMerges(function (m) { return m.indexOf(r) === -1 ? m.concat([r]) : m; });
+                                setPendingUnmerges(function (u) { return u.filter(function (x) { return x !== r; }); });
+                                applyFormatToSelection({ align: 'center' });
+                                setNotice('Merged ' + r + ' (click Save to persist to .xlsx).');
+                              }
+                            } }, 'Merge'),
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Unmerge selected cells', onClick: function () {
+                              var existing = (sheet && sheet.merges) || [];
+                              var allM = existing.concat(pendingMerges);
+                              var hit = null;
+                              for (var mi = 0; mi < allM.length; mi++) {
+                                var pts = String(allM[mi]).split(':');
+                                var mp1 = parseCoord(pts[0]), mp2 = parseCoord(pts[1] || pts[0]);
+                                if (mp1 && mp2) {
+                                  var mn = normalizeRange(mp1, mp2);
+                                  if (selStart.row >= mn.r1 && selStart.row <= mn.r2 && selStart.col >= mn.c1 && selStart.col <= mn.c2) { hit = allM[mi]; break; }
+                                }
+                              }
+                              var targetRange = hit || formatRangeLabel(selStart, selEnd);
+                              setPendingMerges(function (m) { return m.filter(function (x) { return x !== targetRange; }); });
+                              if (existing.indexOf(targetRange) !== -1) {
+                                setPendingUnmerges(function (u) { return u.indexOf(targetRange) === -1 ? u.concat([targetRange]) : u; });
+                              }
+                              setNotice('Unmerged ' + targetRange);
+                            } }, 'Unmerge')
                           ),
                         ]),
                         ribbonGroup('Number', [
@@ -2283,7 +2632,7 @@
                           h('div', { key: 'c1', className: 'dsh-xl-rgroup-row' },
                             h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { runSheetOp('insert_rows', { index: selStart.row, amount: 1 }); } }, '+ Row'),
                             h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { runSheetOp('insert_columns', { index: selStart.col, amount: 1 }); } }, '+ Col'),
-                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { var hVal = window.prompt('Row ' + selStart.row + ' height (px):', String(rowHeights[selStart.row] || 24)); if (hVal && Number(hVal) >= 16) setRowHeights(function (m) { var n = Object.assign({}, m); n[selStart.row] = Number(hVal); return n; }); } }, 'Row Ht')
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { var hVal = window.prompt('Row ' + selStart.row + ' height (px):', String(rowHeights[selStart.row] || 24)); if (hVal && Number(hVal) >= 16) { setRowHeights(function (m) { var n = Object.assign({}, m); n[selStart.row] = Number(hVal); return n; }); setRowHeightsDirty(true); } } }, 'Row Ht')
                           ),
                           h('div', { key: 'c2', className: 'dsh-xl-rgroup-row' },
                             h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { if (window.confirm('Delete row ' + selStart.row + '?')) runSheetOp('delete_rows', { index: selStart.row, amount: 1 }); } }, '− Row'),
@@ -2341,15 +2690,17 @@
                         )),
                         ribbonGroup('Links', h('div', { className: 'dsh-xl-rgroup-row' },
                           h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
-                            var url = window.prompt('Enter URL for ' + activeCoord + ':', hyperlinks[activeCoord] || 'https://');
+                            var url = window.prompt('Enter URL for ' + activeCoord + ':', getCellHyperlink(activeCoord) || 'https://');
                             if (url && url.trim()) {
                               setHyperlinks(function (m) { var n = Object.assign({}, m); n[activeCoord] = url.trim(); return n; });
+                              setHyperlinksDirty(true);
                               if (!getCellRaw(activeCoord)) { var u = {}; u[activeCoord] = url.trim(); setCellValuesBatch(u); }
                               applyFormatToSelection({ font_color: '#0563C1', underline: true });
                             }
                           } }, h('span', null, '🔗'), h('span', null, 'Link')),
-                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || !hyperlinks[activeCoord], onClick: function () {
-                            setHyperlinks(function (m) { var n = Object.assign({}, m); delete n[activeCoord]; return n; });
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || !getCellHyperlink(activeCoord), onClick: function () {
+                            setHyperlinks(function (m) { var n = Object.assign({}, m); n[activeCoord] = ''; return n; });
+                            setHyperlinksDirty(true);
                             applyFormatToSelection({ font_color: '', underline: false });
                           } }, h('span', null, '⛓‍💥'), h('span', null, 'Unlink'))
                         )),
@@ -2527,9 +2878,9 @@
                           ),
                         ]),
                         ribbonGroup('Window', h('div', { className: 'dsh-xl-rgroup-row' },
-                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeTopRow ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeTopRow(function (v) { return !v; }); } }, h('span', null, '❄'), h('span', null, 'Top Row')),
-                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeFirstCol ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeFirstCol(function (v) { return !v; }); } }, h('span', null, '❄'), h('span', null, 'First Col')),
-                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !freezeTopRow && !freezeFirstCol, onClick: function () { setFreezeTopRow(false); setFreezeFirstCol(false); } }, h('span', null, '✕'), h('span', null, 'Unfreeze'))
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeTopRow ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeTopRow(function (v) { return !v; }); setFreezeDirty(true); } }, h('span', null, '❄'), h('span', null, 'Top Row')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeFirstCol ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeFirstCol(function (v) { return !v; }); setFreezeDirty(true); } }, h('span', null, '❄'), h('span', null, 'First Col')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !freezeTopRow && !freezeFirstCol, onClick: function () { setFreezeTopRow(false); setFreezeFirstCol(false); setFreezeDirty(true); } }, h('span', null, '✕'), h('span', null, 'Unfreeze'))
                         )),
                       ]
                 )
@@ -2761,6 +3112,22 @@
                     var pa1 = parseCoord(paParts[0]), pa2 = parseCoord(paParts[1] || paParts[0]);
                     if (pa1 && pa2) paNorm = normalizeRange(pa1, pa2);
                   }
+                  var activeMerges = ((sheet.merges || []).filter(function (mr) { return pendingUnmerges.indexOf(mr) === -1; })).concat(pendingMerges);
+                  var mergeMasterMap = {}, mergeCoveredMap = {};
+                  for (var mi = 0; mi < activeMerges.length; mi++) {
+                    var mPts = String(activeMerges[mi]).split(':');
+                    var mp1 = parseCoord(mPts[0]), mp2 = parseCoord(mPts[1] || mPts[0]);
+                    if (!mp1 || !mp2) continue;
+                    var mn = normalizeRange(mp1, mp2);
+                    if (mn.r1 === mn.r2 && mn.c1 === mn.c2) continue;
+                    mergeMasterMap[mn.r1 + ',' + mn.c1] = { rowSpan: mn.r2 - mn.r1 + 1, colSpan: mn.c2 - mn.c1 + 1 };
+                    for (var mr2 = mn.r1; mr2 <= mn.r2; mr2++) {
+                      for (var mc2 = mn.c1; mc2 <= mn.c2; mc2++) {
+                        if (mr2 !== mn.r1 || mc2 !== mn.c1) mergeCoveredMap[mr2 + ',' + mc2] = true;
+                      }
+                    }
+                  }
+                  var activeFilterCols = Object.keys(colFilters).filter(function (k) { return Boolean(colFilters[k]); });
                   return h(
                     'div', { className: 'dsh-xl-grid-wrap ' + (showGridlines ? 'dsh-xl-gridlines' : ''), style: { direction: sheetRtl ? 'rtl' : 'ltr' } },
                     h(
@@ -2778,7 +3145,11 @@
                                 key: letter, className: 'dsh-xl-colhdr ' + (colActive ? 'dsh-xl-colhdr-active' : '') + (pageBreakView && c % 8 === 0 ? ' dsh-xl-pagebreak-col' : ''),
                                 style: { width: px + 'px', minWidth: px + 'px' },
                                 onClick: function () { setSelStart({ row: 1, col: c }); setSelEnd({ row: rowCount, col: c }); },
-                              }, letter, h('span', { className: 'dsh-xl-resizer', onMouseDown: function (e) { e.stopPropagation(); startColResize(letter, e.clientX, px); } }));
+                              }, letter, h('span', {
+                                className: 'dsh-xl-resizer', title: 'Drag to resize, double-click to AutoFit',
+                                onMouseDown: function (e) { e.stopPropagation(); startColResize(letter, e.clientX, px); },
+                                onDoubleClick: function (e) { e.stopPropagation(); handleAutoFitColIndex(c); },
+                              }));
                             })
                           ))
                         : null,
@@ -2786,12 +3157,18 @@
                         'tbody', null,
                         rowIndices.map(function (r) {
                           if (hiddenRows[r]) return null;
-                          if (autoFilterOn && filterQuery.trim() && r > 1) {
-                            var q = filterQuery.toLowerCase(), hit = false;
-                            for (var fc = 1; fc <= colCount; fc++) {
-                              if (String(getCellDisplay(makeCoord(r, fc))).toLowerCase().indexOf(q) !== -1) { hit = true; break; }
+                          if (autoFilterOn && r > 1) {
+                            if (filterQuery.trim()) {
+                              var q = filterQuery.toLowerCase(), hit = false;
+                              for (var fc = 1; fc <= colCount; fc++) {
+                                if (String(getCellDisplay(makeCoord(r, fc))).toLowerCase().indexOf(q) !== -1) { hit = true; break; }
+                              }
+                              if (!hit) return null;
                             }
-                            if (!hit) return null;
+                            for (var fi = 0; fi < activeFilterCols.length; fi++) {
+                              var fColIdx = Number(activeFilterCols[fi]);
+                              if (String(getCellDisplay(makeCoord(r, fColIdx))) !== colFilters[activeFilterCols[fi]]) return null;
+                            }
                           }
                           var rowActive = r >= selNorm.r1 && r <= selNorm.r2;
                           var rHt = rowHeights[r];
@@ -2802,10 +3179,18 @@
                               style: rHt ? { height: rHt + 'px' } : undefined,
                             },
                             showHeadings
-                              ? h('td', { className: 'dsh-xl-rowhdr ' + (rowActive ? 'dsh-xl-rowhdr-active' : ''), onClick: function () { setSelStart({ row: r, col: 1 }); setSelEnd({ row: r, col: colCount }); } }, r)
+                              ? h('td', {
+                                  className: 'dsh-xl-rowhdr ' + (rowActive ? 'dsh-xl-rowhdr-active' : ''),
+                                  onClick: function () { setSelStart({ row: r, col: 1 }); setSelEnd({ row: r, col: colCount }); },
+                                }, r, h('span', {
+                                  className: 'dsh-xl-row-resizer', title: 'Drag to resize row height',
+                                  onMouseDown: function (e) { e.stopPropagation(); startRowResize(r, e.clientY, rHt || 24); },
+                                }))
                               : null,
                             colIndices.map(function (c) {
                               if (hiddenCols[c]) return null;
+                              if (mergeCoveredMap[r + ',' + c]) return null;
+                              var mSpan = mergeMasterMap[r + ',' + c];
                               var coord = makeCoord(r, c);
                               var isActive = selStart.row === r && selStart.col === c;
                               var inRange = r >= selNorm.r1 && r <= selNorm.r2 && c >= selNorm.c1 && c <= selNorm.c2 && !(selNorm.r1 === selNorm.r2 && selNorm.c1 === selNorm.c2);
@@ -2825,7 +3210,8 @@
                                   condBg = ratio > 0.66 ? '#C6EFCE' : ratio > 0.33 ? '#FFEB9C' : '#FFC7CE';
                                 }
                               }
-                              var noteText = pendingNotes[coord];
+                              var noteText = getCellNote(coord);
+                              var cellLink = getCellHyperlink(coord);
                               var inPrint = paNorm && r >= paNorm.r1 && r <= paNorm.r2 && c >= paNorm.c1 && c <= paNorm.c2;
                               var bp = st.border_preset;
                               var cellCss = {
@@ -2852,14 +3238,56 @@
                                 (dependentMap[coord] ? ' dsh-xl-cell-dependent' : '') +
                                 (inPrint ? ' dsh-xl-cell-printarea' : '') +
                                 (pageBreakView && c % 8 === 0 ? ' dsh-xl-pagebreak-col' : '') +
+                                (cellLink ? ' dsh-xl-cell-link' : '') +
                                 (noteText ? ' dsh-xl-cell-note' : '');
+                              var colFilterActive = Boolean(colFilters[c]);
+                              var uniqueVals = null;
+                              if (autoFilterOn && r === 1 && filterMenuCol === c) {
+                                var uvMap = {};
+                                for (var ur = 2; ur <= rowCount; ur++) {
+                                  var uv = String(getCellDisplay(makeCoord(ur, c)) || '');
+                                  if (uv !== '') uvMap[uv] = true;
+                                }
+                                uniqueVals = Object.keys(uvMap).sort();
+                              }
 
                               return h(
                                 'td',
                                 {
-                                  key: coord, className: cls, style: cellCss, title: noteText || hyperlinks[coord] || undefined,
-                                  onMouseDown: function (e) { if (e.button === 2) return; setFileMenuOpen(false); isDraggingRef.current = true; selectCell(r, c, false, e.shiftKey); },
-                                  onMouseEnter: function () { if (isDraggingRef.current) setSelEnd({ row: r, col: c }); else if (isFillingRef.current) handleFillDragEnter(r, c); },
+                                  key: coord, className: cls, style: cellCss,
+                                  rowSpan: mSpan ? mSpan.rowSpan : undefined,
+                                  colSpan: mSpan ? mSpan.colSpan : undefined,
+                                  title: noteText || (cellLink ? (cellLink + ' (Ctrl+Click to open)') : undefined),
+                                  onMouseDown: function (e) {
+                                    if (e.button === 2) return;
+                                    setFileMenuOpen(false);
+                                    if ((editing || formulaFocused) && canInsertFormulaRef(draftValue) && !sheetProtected) {
+                                      e.preventDefault();
+                                      formulaRefDragRef.current = { r: r, c: c, prefix: draftValue };
+                                      var nextF = draftValue + coord;
+                                      setDraftValue(nextF); setAcIndex(0); setAcDismissed(false);
+                                      var fu = {}; fu[activeCoord] = nextF; setCellValuesBatch(fu);
+                                      return;
+                                    }
+                                    isDraggingRef.current = true;
+                                    selectCell(r, c, false, e.shiftKey);
+                                  },
+                                  onClick: function (e) {
+                                    if ((e.ctrlKey || e.metaKey) && cellLink) {
+                                      e.preventDefault();
+                                      window.open(cellLink, '_blank', 'noopener');
+                                    }
+                                  },
+                                  onMouseEnter: function () {
+                                    if (formulaRefDragRef.current) {
+                                      var refStart = formulaRefDragRef.current;
+                                      var rng = formatRangeLabel({ row: refStart.r, col: refStart.c }, { row: r, col: c });
+                                      var nextF2 = refStart.prefix + rng;
+                                      setDraftValue(nextF2);
+                                      var fu2 = {}; fu2[activeCoord] = nextF2; setCellValuesBatch(fu2);
+                                    } else if (isDraggingRef.current) setSelEnd({ row: r, col: c });
+                                    else if (isFillingRef.current) handleFillDragEnter(r, c);
+                                  },
                                   onDoubleClick: function () { selectCell(r, c, true, false); },
                                   onContextMenu: function (e) { e.preventDefault(); selectCell(r, c, false, false); setCtxMenu({ x: e.clientX, y: e.clientY, row: r, col: c }); },
                                 },
@@ -2871,10 +3299,33 @@
                                         setDraftValue(v); setAcIndex(0); setAcDismissed(false);
                                         var u = {}; u[coord] = v; setCellValuesBatch(u);
                                       },
-                                      onBlur: function () { setTimeout(function () { setEditing(false); }, 120); },
+                                      onBlur: function () { setTimeout(function () { if (!formulaRefDragRef.current) setEditing(false); }, 120); },
                                       onKeyDown: function (e) { handleFormulaKeyDown(e, r, c); },
                                     })
                                   : disp,
+                                autoFilterOn && r === 1
+                                  ? h('button', {
+                                      type: 'button',
+                                      className: 'dsh-xl-colfilter-btn ' + (colFilterActive ? 'dsh-xl-colfilter-btn-on' : ''),
+                                      title: 'Filter / Sort column ' + colIndexToLetter(c),
+                                      onMouseDown: function (e) { e.stopPropagation(); },
+                                      onClick: function (e) { e.stopPropagation(); setFilterMenuCol(filterMenuCol === c ? null : c); },
+                                    }, '▾')
+                                  : null,
+                                autoFilterOn && r === 1 && filterMenuCol === c
+                                  ? h('div', { className: 'dsh-xl-colfilter-pop', onMouseDown: function (e) { e.stopPropagation(); }, onClick: function (e) { e.stopPropagation(); } },
+                                      h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { runSheetOp('sort_column', { column_index: c, ascending: true, has_header: true }); setFilterMenuCol(null); } }, 'A→Z Sort Ascending'),
+                                      h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { runSheetOp('sort_column', { column_index: c, ascending: false, has_header: true }); setFilterMenuCol(null); } }, 'Z→A Sort Descending'),
+                                      h('div', { className: 'dsh-xl-menu-sep' }),
+                                      h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { setColFilters(function (m) { var n = Object.assign({}, m); delete n[c]; return n; }); setFilterMenuCol(null); } }, colFilterActive ? '✕ Clear Filter (Show All)' : '✓ (All Values)'),
+                                      uniqueVals && uniqueVals.map(function (uv) {
+                                        return h('button', {
+                                          key: uv, type: 'button', className: 'dsh-xl-menu-item',
+                                          onClick: function () { setColFilters(function (m) { var n = Object.assign({}, m); n[c] = uv; return n; }); setFilterMenuCol(null); },
+                                        }, (colFilters[c] === uv ? '✓ ' : '') + uv);
+                                      })
+                                    )
+                                  : null,
                                 showAllNotes && noteText ? h('span', { className: 'dsh-xl-note-inline' }, noteText) : null,
                                 isBottomRight && !editing && !sheetProtected
                                   ? h('span', { className: 'dsh-xl-fillhandle', title: 'Drag to AutoFill', onMouseDown: function (e) { e.stopPropagation(); isFillingRef.current = true; } })
@@ -2900,7 +3351,7 @@
                   'div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setFxModalOpen(false); } },
                   h(
                     'div', { className: 'dsh-xl-modal', onClick: function (e) { e.stopPropagation(); } },
-                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Insert Function (fx) — 125+ Excel Functions'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setFxModalOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Insert Function (fx) — 160+ Excel Functions'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setFxModalOpen(false); } }, '✕')),
                     h(
                       'div', { className: 'dsh-xl-modal-body' },
                       h('div', { style: { display: 'flex', gap: '8px' } },
@@ -3181,7 +3632,7 @@
                       h('span', null, zoom + '%'),
                       h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, '+')
                     ),
-                    h('span', null, 'v0.7.0')
+                    h('span', null, 'v0.8.0')
                   )
                 )
               : null
