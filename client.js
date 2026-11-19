@@ -109,29 +109,31 @@
     '  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; outline: none; user-select: text;',
     '}',
     '.dsh-xl-finput:focus { border-color: #107c41; }',
-    '.dsh-xl-grid-wrap { flex: 1; min-height: 0; overflow: auto; position: relative; background: var(--dsw-alias-bg-primary, #ffffff); }',
-    '.dsh-xl-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: max-content; min-width: 100%; }',
+    '.dsh-xl-grid-wrap { flex: 1; min-height: 0; overflow: auto; position: relative; background: var(--dsw-alias-bg-primary, #ffffff); user-select: none; -webkit-user-select: none; }',
+    '.dsh-xl-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; width: max-content; min-width: 100%; user-select: none; -webkit-user-select: none; }',
     '.dsh-xl-corner {',
     '  position: sticky; top: 0; left: 0; z-index: 6; width: 44px; min-width: 44px; height: 24px;',
     '  background: var(--dsw-alias-bg-secondary, #f0f0f0); border-right: 1px solid #c6c6c6; border-bottom: 1px solid #c6c6c6;',
+    '  cursor: pointer;',
     '}',
+    '.dsh-xl-corner:hover { background: rgba(16,124,65,0.18); }',
     '.dsh-xl-colhdr {',
     '  position: sticky; top: 0; z-index: 4; height: 24px; background: var(--dsw-alias-bg-secondary, #f0f0f0);',
     '  color: var(--dsw-alias-text-secondary, #444444); font-weight: 600; font-size: 11px; text-align: center;',
-    '  border-right: 1px solid #d0d0d0; border-bottom: 1px solid #c6c6c6;',
+    '  border-right: 1px solid #d0d0d0; border-bottom: 1px solid #c6c6c6; cursor: pointer; user-select: none; -webkit-user-select: none;',
     '}',
     '.dsh-xl-colhdr-active { background: rgba(16,124,65,0.16); color: #107c41; border-bottom: 2px solid #107c41; }',
     '.dsh-xl-resizer { position: absolute; top: 0; right: 0; width: 5px; height: 100%; cursor: col-resize; }',
     '.dsh-xl-rowhdr {',
     '  position: sticky; left: 0; z-index: 3; width: 44px; min-width: 44px; text-align: center; font-size: 11px;',
     '  color: var(--dsw-alias-text-secondary, #555555); background: var(--dsw-alias-bg-secondary, #f0f0f0);',
-    '  border-right: 1px solid #c6c6c6; border-bottom: 1px solid #d8d8d8;',
+    '  border-right: 1px solid #c6c6c6; border-bottom: 1px solid #d8d8d8; cursor: pointer; user-select: none; -webkit-user-select: none;',
     '}',
     '.dsh-xl-row-resizer { position: absolute; left: 0; bottom: 0; width: 100%; height: 5px; cursor: row-resize; }',
     '.dsh-xl-rowhdr-active { background: rgba(16,124,65,0.16); color: #107c41; font-weight: 700; border-right: 2px solid #107c41; }',
     '.dsh-xl-cell {',
     '  height: 24px; padding: 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
-    '  cursor: cell; position: relative; vertical-align: middle; box-sizing: border-box;',
+    '  cursor: cell; position: relative; vertical-align: middle; box-sizing: border-box; user-select: none; -webkit-user-select: none;',
     '}',
     '.dsh-xl-cell-link { color: #0563c1; text-decoration: underline; cursor: pointer; }',
     '.dsh-xl-colfilter-btn { position: absolute; right: 2px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; border: 1px solid rgba(127,127,127,0.35); border-radius: 2px; background: var(--dsw-alias-bg-secondary, #f3f3f3); color: inherit; font-size: 9px; line-height: 1; padding: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }',
@@ -1316,6 +1318,23 @@
     return out;
   }
 
+  function cycleRefLock(formula) {
+    if (typeof formula !== 'string' || !formula.startsWith('=')) return formula;
+    var m = /(\$?)([A-Za-z]{1,3})(\$?)(\d+)\s*$/.exec(formula);
+    if (!m) return formula;
+    var prefix = formula.slice(0, m.index);
+    var col = m[2].toUpperCase();
+    var row = m[4];
+    var colAbs = m[1] === '$';
+    var rowAbs = m[3] === '$';
+    var nextRef;
+    if (!colAbs && !rowAbs) nextRef = '$' + col + '$' + row;
+    else if (colAbs && rowAbs) nextRef = col + '$' + row;
+    else if (!colAbs && rowAbs) nextRef = '$' + col + row;
+    else nextRef = col + row;
+    return prefix + nextRef;
+  }
+
   function canInsertFormulaRef(draft) {
     if (typeof draft !== 'string' || !draft.startsWith('=')) return false;
     return /[=(,+\-*/^&<>:]\s*$/.test(draft);
@@ -1413,6 +1432,7 @@
           var clipboardStylesRef = useRef(null);
           var formatPainterRef = useRef(null);
           var formulaRefDragRef = useRef(null);
+          var dragOriginRef = useRef(null);
           var fileInputRef = useRef(null);
           var sPainterOn = useState(false), painterActive = sPainterOn[0], setPainterActive = sPainterOn[1];
 
@@ -1498,7 +1518,7 @@
             stEl.textContent = '@page { size: ' + printCfg.paper + ' ' + printCfg.orientation + '; margin: ' + mVal + '; }';
           }, [printCfg]);
           useEffect(function () {
-            var onUp = function () { isDraggingRef.current = false; isFillingRef.current = false; formulaRefDragRef.current = null; };
+            var onUp = function () { isDraggingRef.current = false; isFillingRef.current = false; formulaRefDragRef.current = null; dragOriginRef.current = null; };
             var onClick = function () { setCtxMenu(null); setFilterMenuCol(null); };
             window.addEventListener('mouseup', onUp);
             window.addEventListener('click', onClick);
@@ -2262,6 +2282,62 @@
           };
 
           useEffect(function () {
+            var findBoundary = function (startRow, startCol, dRow, dCol) {
+              var maxR = (sheet && sheet.row_count) || 40;
+              var maxC = (sheet && sheet.col_count) || 16;
+              var r = startRow, c = startCol;
+              var curVal = getCellRaw(makeCoord(r, c));
+              var isCurEmpty = (curVal === '' || curVal === null || curVal === undefined);
+              if (isCurEmpty) {
+                while (true) {
+                  var nr = r + dRow, nc = c + dCol;
+                  if (nr < 1 || nr > maxR || nc < 1 || nc > maxC) return { row: r, col: c };
+                  r = nr; c = nc;
+                  var v = getCellRaw(makeCoord(r, c));
+                  if (v !== '' && v !== null && v !== undefined) return { row: r, col: c };
+                }
+              } else {
+                var nr1 = r + dRow, nc1 = c + dCol;
+                if (nr1 < 1 || nr1 > maxR || nc1 < 1 || nc1 > maxC) return { row: r, col: c };
+                var v1 = getCellRaw(makeCoord(nr1, nc1));
+                var isNextEmpty = (v1 === '' || v1 === null || v1 === undefined);
+                if (isNextEmpty) {
+                  while (true) {
+                    r += dRow; c += dCol;
+                    if (r < 1 || r > maxR || c < 1 || c > maxC) return { row: r - dRow, col: c - dCol };
+                    var v2 = getCellRaw(makeCoord(r, c));
+                    if (v2 !== '' && v2 !== null && v2 !== undefined) return { row: r, col: c };
+                  }
+                } else {
+                  while (true) {
+                    var nr2 = r + dRow, nc2 = c + dCol;
+                    if (nr2 < 1 || nr2 > maxR || nc2 < 1 || nc2 > maxC) return { row: r, col: c };
+                    var v3 = getCellRaw(makeCoord(nr2, nc2));
+                    if (v3 === '' || v3 === null || v3 === undefined) return { row: r, col: c };
+                    r = nr2; c = nc2;
+                  }
+                }
+              }
+            };
+
+            var navigate = function (dRow, dCol, shiftKey, ctrlKey) {
+              var maxR = (sheet && sheet.row_count) || 40;
+              var maxC = (sheet && sheet.col_count) || 16;
+              if (shiftKey) {
+                var baseR = selEnd.row, baseC = selEnd.col;
+                var target = ctrlKey
+                  ? findBoundary(baseR, baseC, dRow, dCol)
+                  : { row: Math.max(1, Math.min(maxR, baseR + dRow)), col: Math.max(1, Math.min(maxC, baseC + dCol)) };
+                setSelEnd(target);
+              } else {
+                var baseR2 = selStart.row, baseC2 = selStart.col;
+                var target2 = ctrlKey
+                  ? findBoundary(baseR2, baseC2, dRow, dCol)
+                  : { row: Math.max(1, Math.min(maxR, baseR2 + dRow)), col: Math.max(1, Math.min(maxC, baseC2 + dCol)) };
+                selectCell(target2.row, target2.col, false, false);
+              }
+            };
+
             var onKeyDown = function (e) {
               var tag = (e.target && e.target.tagName) || '';
               var inInput = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA';
@@ -2280,13 +2356,82 @@
               if (ctrl && e.key.toLowerCase() === 'i') { e.preventDefault(); applyFormatToSelection({ italic: !getCellStyle(activeCoord).italic }); return; }
               if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); applyFormatToSelection({ underline: !getCellStyle(activeCoord).underline }); return; }
               if (!sheet) return;
-              if (e.key === 'ArrowDown') { e.preventDefault(); selectCell(selStart.row + 1, selStart.col, false, e.shiftKey); }
-              else if (e.key === 'ArrowUp') { e.preventDefault(); selectCell(selStart.row - 1, selStart.col, false, e.shiftKey); }
-              else if (e.key === 'ArrowRight') { e.preventDefault(); selectCell(selStart.row, selStart.col + 1, false, e.shiftKey); }
-              else if (e.key === 'ArrowLeft') { e.preventDefault(); selectCell(selStart.row, selStart.col - 1, false, e.shiftKey); }
+
+              // Selection shortcuts
+              if (ctrl && e.key.toLowerCase() === 'a') {
+                e.preventDefault();
+                var maxR = sheet.row_count || 40, maxC = sheet.col_count || 16;
+                var isWhole = (selNorm.r1 === 1 && selNorm.c1 === 1 && selNorm.r2 === maxR && selNorm.c2 === maxC);
+                if (!isWhole && selNorm.r1 === selNorm.r2 && selNorm.c1 === selNorm.c2) {
+                  var bDown = findBoundary(selStart.row, selStart.col, 1, 0);
+                  var bUp = findBoundary(selStart.row, selStart.col, -1, 0);
+                  var bRight = findBoundary(selStart.row, selStart.col, 0, 1);
+                  var bLeft = findBoundary(selStart.row, selStart.col, 0, -1);
+                  var r1 = Math.min(selStart.row, bUp.row), r2 = Math.max(selStart.row, bDown.row);
+                  var c1 = Math.min(selStart.col, bLeft.col), c2 = Math.max(selStart.col, bRight.col);
+                  if (r2 > r1 || c2 > c1) { setSelStart({ row: r1, col: c1 }); setSelEnd({ row: r2, col: c2 }); return; }
+                }
+                setSelStart({ row: 1, col: 1 }); setSelEnd({ row: maxR, col: maxC });
+                return;
+              }
+              if (e.key === ' ' || e.code === 'Space') {
+                var sMaxR = sheet.row_count || 40, sMaxC = sheet.col_count || 16;
+                if (ctrl && e.shiftKey) { e.preventDefault(); setSelStart({ row: 1, col: 1 }); setSelEnd({ row: sMaxR, col: sMaxC }); return; }
+                if (e.shiftKey) { e.preventDefault(); setSelStart({ row: selNorm.r1, col: 1 }); setSelEnd({ row: selNorm.r2, col: sMaxC }); return; }
+                if (ctrl) { e.preventDefault(); setSelStart({ row: 1, col: selNorm.c1 }); setSelEnd({ row: sMaxR, col: selNorm.c2 }); return; }
+              }
+              if (ctrl && (e.key === ';' || e.key === ':')) {
+                e.preventDefault();
+                var now = new Date();
+                var dtVal = (e.shiftKey || e.key === ':') ? now.toTimeString().slice(0, 8) : now.toISOString().slice(0, 10);
+                var uD = {}; uD[activeCoord] = dtVal; setCellValuesBatch(uD); setDraftValue(dtVal);
+                return;
+              }
+              if (ctrl && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                var curUrl = getCellHyperlink(activeCoord);
+                var uIn = window.prompt('Insert Hyperlink for ' + activeCoord + ':', curUrl || 'https://');
+                if (uIn && uIn.trim()) {
+                  setHyperlinks(function (m) { var n = Object.assign({}, m); n[activeCoord] = uIn.trim(); return n; });
+                  setHyperlinksDirty(true);
+                  if (!getCellRaw(activeCoord)) { var uK = {}; uK[activeCoord] = uIn.trim(); setCellValuesBatch(uK); }
+                  applyFormatToSelection({ font_color: '#0563C1', underline: true });
+                }
+                return;
+              }
+              if (e.key === 'Home') {
+                e.preventDefault();
+                if (ctrl) selectCell(1, 1, false, e.shiftKey);
+                else selectCell(selStart.row, 1, false, e.shiftKey);
+                return;
+              }
+              if (e.key === 'End' && ctrl) {
+                e.preventDefault();
+                var maxUsedR = Math.max(1, sheet.max_row || 1);
+                var maxUsedC = Math.max(1, sheet.max_column || 1);
+                selectCell(maxUsedR, maxUsedC, false, e.shiftKey);
+                return;
+              }
+              if (e.key === 'PageDown') {
+                e.preventDefault();
+                if (e.altKey) navigate(0, 10, e.shiftKey, false);
+                else navigate(20, 0, e.shiftKey, false);
+                return;
+              }
+              if (e.key === 'PageUp') {
+                e.preventDefault();
+                if (e.altKey) navigate(0, -10, e.shiftKey, false);
+                else navigate(-20, 0, e.shiftKey, false);
+                return;
+              }
+              if (e.key === 'ArrowDown') { e.preventDefault(); navigate(1, 0, e.shiftKey, ctrl); }
+              else if (e.key === 'ArrowUp') { e.preventDefault(); navigate(-1, 0, e.shiftKey, ctrl); }
+              else if (e.key === 'ArrowRight') { e.preventDefault(); navigate(0, 1, e.shiftKey, ctrl); }
+              else if (e.key === 'ArrowLeft') { e.preventDefault(); navigate(0, -1, e.shiftKey, ctrl); }
               else if (e.key === 'Tab') { e.preventDefault(); selectCell(selStart.row, selStart.col + (e.shiftKey ? -1 : 1), false, false); }
               else if (e.key === 'Enter') { e.preventDefault(); selectCell(selStart.row + (e.shiftKey ? -1 : 1), selStart.col, false, false); }
               else if (e.key === 'F2') { e.preventDefault(); if (!sheetProtected) setEditing(true); }
+              else if (e.key === 'Escape') { e.preventDefault(); setSelEnd({ row: selStart.row, col: selStart.col }); }
               else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); handleClearSelection('contents'); }
               else if (e.key.length === 1 && !ctrl && !e.altKey && !sheetProtected) {
                 setEditing(true); setDraftValue(e.key);
@@ -2295,7 +2440,7 @@
             };
             window.addEventListener('keydown', onKeyDown);
             return function () { window.removeEventListener('keydown', onKeyDown); };
-          }, [sheet, sheetProtected, selStart, activeCoord, handleSave, handleUndo, handleRedo, handleCopy, handlePaste, applyFormatToSelection, getCellStyle, setCellValuesBatch]);
+          }, [sheet, sheetProtected, selStart, selEnd, selNorm, activeCoord, handleSave, handleUndo, handleRedo, handleCopy, handlePaste, handleFillDirection, applyFormatToSelection, getCellStyle, getCellRaw, getCellHyperlink, setCellValuesBatch]);
 
           var selStats = (function () {
             if (!sheet) return null;
@@ -2354,25 +2499,101 @@
             setNotice('AutoFit column ' + letter + ' to width ' + w);
           };
 
+          var handleFillDoubleClick = function () {
+            if (!sheet) return;
+            var refCol = selNorm.c1 > 1 ? selNorm.c1 - 1 : selNorm.c1 + 1;
+            var maxR = (sheet && sheet.row_count) || 40;
+            var lastRow = selNorm.r2;
+            while (lastRow < maxR) {
+              var adjVal = getCellRaw(makeCoord(lastRow + 1, refCol));
+              if (adjVal === '' || adjVal === null || adjVal === undefined) break;
+              lastRow++;
+            }
+            if (lastRow > selNorm.r2) {
+              handleFillDragEnter(lastRow, selNorm.c2);
+              setNotice('AutoFilled ' + (lastRow - selNorm.r2) + ' row(s) to row ' + lastRow);
+            }
+          };
+
           var handleFillDragEnter = function (targetRow, targetCol) {
             if (!isFillingRef.current || !sheet) return;
-            var baseRaw = getCellRaw(activeCoord), baseNum = Number(baseRaw), isNum = baseRaw !== '' && Number.isFinite(baseNum);
-            var isFormula = typeof baseRaw === 'string' && baseRaw.startsWith('=');
             var updates = {};
-            if (targetRow > selStart.row) {
-              for (var r = selStart.row + 1; r <= targetRow; r++) {
-                updates[makeCoord(r, selStart.col)] = isFormula
-                  ? shiftFormulaRefs(baseRaw, r - selStart.row, 0)
-                  : (isNum ? String(baseNum + (r - selStart.row)) : baseRaw);
+            if (targetRow > selNorm.r2) {
+              for (var r = selNorm.r2 + 1; r <= targetRow; r++) {
+                for (var c = selNorm.c1; c <= selNorm.c2; c++) {
+                  var srcRaw = getCellRaw(makeCoord(selNorm.r2, c));
+                  var srcNum = Number(srcRaw), isN = srcRaw !== '' && Number.isFinite(srcNum);
+                  var isF = typeof srcRaw === 'string' && srcRaw.startsWith('=');
+                  var step = 1;
+                  if (selNorm.r2 > selNorm.r1) {
+                    var prevRaw = getCellRaw(makeCoord(selNorm.r2 - 1, c));
+                    var prevNum = Number(prevRaw);
+                    if (isN && prevRaw !== '' && Number.isFinite(prevNum)) step = srcNum - prevNum;
+                  }
+                  var offset = r - selNorm.r2;
+                  updates[makeCoord(r, c)] = isF
+                    ? shiftFormulaRefs(srcRaw, offset, 0)
+                    : (isN ? String(srcNum + offset * step) : srcRaw);
+                }
               }
-              setSelEnd({ row: targetRow, col: selStart.col });
-            } else if (targetCol > selStart.col) {
-              for (var c = selStart.col + 1; c <= targetCol; c++) {
-                updates[makeCoord(selStart.row, c)] = isFormula
-                  ? shiftFormulaRefs(baseRaw, 0, c - selStart.col)
-                  : (isNum ? String(baseNum + (c - selStart.col)) : baseRaw);
+              setSelEnd({ row: targetRow, col: selEnd.col });
+            } else if (targetRow < selNorm.r1) {
+              for (var r2 = selNorm.r1 - 1; r2 >= targetRow; r2--) {
+                for (var c2 = selNorm.c1; c2 <= selNorm.c2; c2++) {
+                  var srcRaw2 = getCellRaw(makeCoord(selNorm.r1, c2));
+                  var srcNum2 = Number(srcRaw2), isN2 = srcRaw2 !== '' && Number.isFinite(srcNum2);
+                  var isF2 = typeof srcRaw2 === 'string' && srcRaw2.startsWith('=');
+                  var step2 = 1;
+                  if (selNorm.r2 > selNorm.r1) {
+                    var nextRaw = getCellRaw(makeCoord(selNorm.r1 + 1, c2));
+                    var nextNum = Number(nextRaw);
+                    if (isN2 && nextRaw !== '' && Number.isFinite(nextNum)) step2 = nextNum - srcNum2;
+                  }
+                  var offset2 = selNorm.r1 - r2;
+                  updates[makeCoord(r2, c2)] = isF2
+                    ? shiftFormulaRefs(srcRaw2, -offset2, 0)
+                    : (isN2 ? String(srcNum2 - offset2 * step2) : srcRaw2);
+                }
               }
-              setSelEnd({ row: selStart.row, col: targetCol });
+              setSelEnd({ row: targetRow, col: selEnd.col });
+            } else if (targetCol > selNorm.c2) {
+              for (var c3 = selNorm.c2 + 1; c3 <= targetCol; c3++) {
+                for (var r3 = selNorm.r1; r3 <= selNorm.r2; r3++) {
+                  var srcRaw3 = getCellRaw(makeCoord(r3, selNorm.c2));
+                  var srcNum3 = Number(srcRaw3), isN3 = srcRaw3 !== '' && Number.isFinite(srcNum3);
+                  var isF3 = typeof srcRaw3 === 'string' && srcRaw3.startsWith('=');
+                  var step3 = 1;
+                  if (selNorm.c2 > selNorm.c1) {
+                    var prevRaw3 = getCellRaw(makeCoord(r3, selNorm.c2 - 1));
+                    var prevNum3 = Number(prevRaw3);
+                    if (isN3 && prevRaw3 !== '' && Number.isFinite(prevNum3)) step3 = srcNum3 - prevNum3;
+                  }
+                  var offset3 = c3 - selNorm.c2;
+                  updates[makeCoord(r3, c3)] = isF3
+                    ? shiftFormulaRefs(srcRaw3, 0, offset3)
+                    : (isN3 ? String(srcNum3 + offset3 * step3) : srcRaw3);
+                }
+              }
+              setSelEnd({ row: selEnd.row, col: targetCol });
+            } else if (targetCol < selNorm.c1) {
+              for (var c4 = selNorm.c1 - 1; c4 >= targetCol; c4--) {
+                for (var r4 = selNorm.r1; r4 <= selNorm.r2; r4++) {
+                  var srcRaw4 = getCellRaw(makeCoord(r4, selNorm.c1));
+                  var srcNum4 = Number(srcRaw4), isN4 = srcRaw4 !== '' && Number.isFinite(srcNum4);
+                  var isF4 = typeof srcRaw4 === 'string' && srcRaw4.startsWith('=');
+                  var step4 = 1;
+                  if (selNorm.c2 > selNorm.c1) {
+                    var nextRaw4 = getCellRaw(makeCoord(r4, selNorm.c1 + 1));
+                    var nextNum4 = Number(nextRaw4);
+                    if (isN4 && nextRaw4 !== '' && Number.isFinite(nextNum4)) step4 = nextNum4 - srcNum4;
+                  }
+                  var offset4 = selNorm.c1 - c4;
+                  updates[makeCoord(r4, c4)] = isF4
+                    ? shiftFormulaRefs(srcRaw4, 0, -offset4)
+                    : (isN4 ? String(srcNum4 - offset4 * step4) : srcRaw4);
+                }
+              }
+              setSelEnd({ row: selEnd.row, col: targetCol });
             }
             if (Object.keys(updates).length) setCellValuesBatch(updates);
           };
@@ -2410,6 +2631,14 @@
           };
 
           var handleFormulaKeyDown = function (e, rowIdx, colIdx) {
+            if (e.key === 'F4') {
+              e.preventDefault();
+              var cycled = cycleRefLock(draftValue);
+              setDraftValue(cycled);
+              var u = {}; u[activeCoord] = cycled;
+              setCellValuesBatch(u);
+              return;
+            }
             if (acData && acData.items.length) {
               if (e.key === 'ArrowDown') {
                 e.preventDefault();
@@ -3009,7 +3238,22 @@
                   h('input', {
                     className: 'dsh-xl-namebox', value: nameBoxText, title: 'Name Box',
                     onChange: function (e) { setNameBoxText(e.target.value); },
-                    onKeyDown: function (e) { if (e.key === 'Enter') { var p = parseCoord(nameBoxText); if (p) selectCell(p.row, p.col, false, false); } },
+                    onKeyDown: function (e) {
+                      if (e.key === 'Enter') {
+                        var rawText = String(nameBoxText || '').trim().toUpperCase();
+                        if (rawText.indexOf(':') !== -1) {
+                          var parts = rawText.split(':');
+                          var p1 = parseCoord(parts[0]), p2 = parseCoord(parts[1] || parts[0]);
+                          if (p1 && p2) {
+                            setSelStart({ row: p1.row, col: p1.col });
+                            setSelEnd({ row: p2.row, col: p2.col });
+                            return;
+                          }
+                        }
+                        var p = parseCoord(rawText);
+                        if (p) selectCell(p.row, p.col, false, false);
+                      }
+                    },
                   }),
                   h('button', { type: 'button', className: 'dsh-xl-rbtn', title: 'Cancel', onClick: function () { setDraftValue(getCellRaw(activeCoord)); setEditing(false); } }, '✕'),
                   h('button', { type: 'button', className: 'dsh-xl-rbtn', title: 'Enter', onClick: function () { var u = {}; u[activeCoord] = draftValue; setCellValuesBatch(u); setEditing(false); } }, '✓'),
@@ -3134,7 +3378,10 @@
                       'table', { className: 'dsh-xl-table', style: { zoom: zoom / 100 } },
                       showHeadings
                         ? h('thead', null, h('tr', null,
-                            h('th', { className: 'dsh-xl-corner' }),
+                            h('th', {
+                              className: 'dsh-xl-corner', title: 'Select All (Ctrl+A)',
+                              onClick: function () { setSelStart({ row: 1, col: 1 }); setSelEnd({ row: rowCount, col: colCount }); },
+                            }),
                             colIndices.map(function (c) {
                               if (hiddenCols[c]) return null;
                               var letter = colIndexToLetter(c);
@@ -3144,7 +3391,21 @@
                               return h('th', {
                                 key: letter, className: 'dsh-xl-colhdr ' + (colActive ? 'dsh-xl-colhdr-active' : '') + (pageBreakView && c % 8 === 0 ? ' dsh-xl-pagebreak-col' : ''),
                                 style: { width: px + 'px', minWidth: px + 'px' },
-                                onClick: function () { setSelStart({ row: 1, col: c }); setSelEnd({ row: rowCount, col: c }); },
+                                onMouseDown: function (e) {
+                                  if (e.button === 2) return;
+                                  e.preventDefault();
+                                  isDraggingRef.current = 'col_header';
+                                  dragOriginRef.current = c;
+                                  setSelStart({ row: 1, col: c });
+                                  setSelEnd({ row: rowCount, col: c });
+                                },
+                                onMouseEnter: function () {
+                                  if (isDraggingRef.current === 'col_header') {
+                                    var orig = dragOriginRef.current != null ? dragOriginRef.current : c;
+                                    setSelStart({ row: 1, col: Math.min(orig, c) });
+                                    setSelEnd({ row: rowCount, col: Math.max(orig, c) });
+                                  }
+                                },
                               }, letter, h('span', {
                                 className: 'dsh-xl-resizer', title: 'Drag to resize, double-click to AutoFit',
                                 onMouseDown: function (e) { e.stopPropagation(); startColResize(letter, e.clientX, px); },
@@ -3181,7 +3442,21 @@
                             showHeadings
                               ? h('td', {
                                   className: 'dsh-xl-rowhdr ' + (rowActive ? 'dsh-xl-rowhdr-active' : ''),
-                                  onClick: function () { setSelStart({ row: r, col: 1 }); setSelEnd({ row: r, col: colCount }); },
+                                  onMouseDown: function (e) {
+                                    if (e.button === 2) return;
+                                    e.preventDefault();
+                                    isDraggingRef.current = 'row_header';
+                                    dragOriginRef.current = r;
+                                    setSelStart({ row: r, col: 1 });
+                                    setSelEnd({ row: r, col: colCount });
+                                  },
+                                  onMouseEnter: function () {
+                                    if (isDraggingRef.current === 'row_header') {
+                                      var orig = dragOriginRef.current != null ? dragOriginRef.current : r;
+                                      setSelStart({ row: Math.min(orig, r), col: 1 });
+                                      setSelEnd({ row: Math.max(orig, r), col: colCount });
+                                    }
+                                  },
                                 }, r, h('span', {
                                   className: 'dsh-xl-row-resizer', title: 'Drag to resize row height',
                                   onMouseDown: function (e) { e.stopPropagation(); startRowResize(r, e.clientY, rHt || 24); },
@@ -3269,7 +3544,9 @@
                                       var fu = {}; fu[activeCoord] = nextF; setCellValuesBatch(fu);
                                       return;
                                     }
-                                    isDraggingRef.current = true;
+                                    if (!editing) e.preventDefault();
+                                    isDraggingRef.current = 'cells';
+                                    dragOriginRef.current = { row: r, col: c };
                                     selectCell(r, c, false, e.shiftKey);
                                   },
                                   onClick: function (e) {
@@ -3285,8 +3562,11 @@
                                       var nextF2 = refStart.prefix + rng;
                                       setDraftValue(nextF2);
                                       var fu2 = {}; fu2[activeCoord] = nextF2; setCellValuesBatch(fu2);
-                                    } else if (isDraggingRef.current) setSelEnd({ row: r, col: c });
-                                    else if (isFillingRef.current) handleFillDragEnter(r, c);
+                                    } else if (isDraggingRef.current === 'cells' || isDraggingRef.current === true) {
+                                      setSelEnd({ row: r, col: c });
+                                    } else if (isFillingRef.current) {
+                                      handleFillDragEnter(r, c);
+                                    }
                                   },
                                   onDoubleClick: function () { selectCell(r, c, true, false); },
                                   onContextMenu: function (e) { e.preventDefault(); selectCell(r, c, false, false); setCtxMenu({ x: e.clientX, y: e.clientY, row: r, col: c }); },
@@ -3328,7 +3608,12 @@
                                   : null,
                                 showAllNotes && noteText ? h('span', { className: 'dsh-xl-note-inline' }, noteText) : null,
                                 isBottomRight && !editing && !sheetProtected
-                                  ? h('span', { className: 'dsh-xl-fillhandle', title: 'Drag to AutoFill', onMouseDown: function (e) { e.stopPropagation(); isFillingRef.current = true; } })
+                                  ? h('span', {
+                                      className: 'dsh-xl-fillhandle',
+                                      title: 'Drag to AutoFill (or double-click to AutoFill down)',
+                                      onMouseDown: function (e) { e.stopPropagation(); isFillingRef.current = true; },
+                                      onDoubleClick: function (e) { e.stopPropagation(); handleFillDoubleClick(); },
+                                    })
                                   : null
                               );
                             })
@@ -3632,7 +3917,7 @@
                       h('span', null, zoom + '%'),
                       h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, '+')
                     ),
-                    h('span', null, 'v0.8.1')
+                    h('span', null, 'v0.8.2')
                   )
                 )
               : null
