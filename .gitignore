@@ -1,0 +1,21 @@
+# Python virtual environment & cache
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing & build artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Excel Studio defensive backups
+.dsh_backup/
+
+# Operating system artifacts
+.DS_Store
+Thumbs.db

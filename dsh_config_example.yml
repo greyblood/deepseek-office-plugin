@@ -1,0 +1,33 @@
+# ==============================================================================
+# DeepSeek Harness Desktop - Excel Studio MCP Server Configuration
+# ==============================================================================
+# Add this overlay entry into your active profile's cordis.patch.yml:
+#
+# On Windows:
+#   %USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml
+#
+# On macOS / Linux:
+#   ~/.dsh/profiles/desktop/cordis.patch.yml
+#
+# After saving this file, start or restart DeepSeek Harness Desktop.
+# The tools will be discovered automatically and exposed to the model with
+# the prefix: mcp__excel__<tool_name>
+# ==============================================================================
+
+- insert:
+    - id: mcp-excel-studio
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: excel
+        transport: stdio
+        # Path to Python executable in your virtual environment or system PATH:
+        command: python
+        args:
+          - -m
+          - excel_mcp
+        env:
+          # Semicolon-separated (Windows) or colon-separated (Linux/Mac) allowed roots
+          EXCEL_MCP_ALLOWED_DIRS: 'C:\Users\Username\Documents;D:\Projects'
+          EXCEL_MCP_AUTO_BACKUP: 'true'
+          EXCEL_MCP_REQUIRE_CONFIRMATION: 'true'
+          EXCEL_MCP_LOG_LEVEL: 'INFO'
