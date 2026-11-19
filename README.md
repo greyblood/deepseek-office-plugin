@@ -1,20 +1,24 @@
-# DeepSeek Excel Studio – Production MCP Server
+# DeepSeek Excel Studio – In-App Excel Editor & MCP Plugin
 
-Production-quality Excel automation integration for **DeepSeek Harness Desktop**, powered by the Model Context Protocol (MCP), `openpyxl`, and `pandas`.
+Production-quality **in-app Excel spreadsheet editor** and **24-tool MCP automation server** for **DeepSeek Harness Desktop**, powered by Cordis, `openpyxl`, and `pandas`.
 
-Allows DeepSeek AI agents to directly open, inspect, manipulate, analyze, format, and save local `.xlsx` and `.xlsm` workbooks through natural language instructions—without executing unvetted code on your system.
+Open, view, edit, format, and save local `.xlsx` and `.xlsm` workbooks directly inside DeepSeek Harness Desktop's main panel—while also giving your DeepSeek AI agent 24 structured MCP tools to automate the exact same workbooks safely.
 
 ---
 
 ## 1. Key Features
 
-- **24 Specialized Tools**: Complete coverage of workbooks, worksheets, ranges, cells, formatting, filtering, sorting, summaries, and charts.
+- **In-App Office / Excel Editor UI (`Excel Studio` sidebar panel)**:
+  - Native left-sidebar entry (`sidebar.panellist`) opening a full spreadsheet editor inside DeepSeek Harness (`main` panel).
+  - Interactive grid with formula bar (`fx`), inline cell editing, workbook switcher, `+ New` workbook creator, sheet tabs (`+ Sheet`, Rename, Delete), formatting ribbon (Bold, Italic, Alignment, Fill swatches, Number formats), Row/Column insert & delete, and one-click Dataset Summary Stats.
+  - Backed by authenticated same-origin Host API routes (`/api/excel-studio/*`) with automatic `.dsh_backup/` snapshots on every save.
+- **24 Specialized AI MCP Tools**: Complete coverage of workbooks, worksheets, ranges, cells, formatting, filtering, sorting, summaries, and charts.
 - **Dual Format Support**: Full support for `.xlsx` and `.xlsm` (with VBA macro preservation via `keep_vba=True`).
 - **Strict Sandboxing**: Path traversal defense, directory confinement (`EXCEL_MCP_ALLOWED_DIRS`), and file extension verification.
 - **Automated Defensive Backups**: Timestamped snapshots saved under `.dsh_backup/` before any destructive modification.
 - **Preview & Confirmation Guards**: Dangerous operations (e.g. deleting sheets, rows, columns, or bulk clearing) require explicit confirmation or return an impact preview first.
-- **Zero Raw Code Execution**: The agent invokes structured, strongly-typed JSON-RPC tools rather than running arbitrary Python scripts.
-- **Lock-File Awareness**: Probes for Microsoft Excel temporary lock files (`~$filename.xlsx`) and warns the user if a file is currently locked by desktop Excel.
+- **Zero Raw Code Execution**: Both the UI editor and AI agent invoke structured, strongly-typed commands rather than running arbitrary Python scripts.
+- **Lock-File Awareness**: Probes for Microsoft Excel temporary lock files (`~$filename.xlsx`) and warns if a file is currently locked by desktop Excel.
 
 ---
 
@@ -22,12 +26,17 @@ Allows DeepSeek AI agents to directly open, inspect, manipulate, analyze, format
 
 ```
 deepseek-office-plugin/
-├── pyproject.toml              # Build & dependency metadata
-├── requirements.txt            # Pinned dependency freeze
-├── dsh_config_example.yml      # Ready-to-copy DSH cordis.patch.yml snippet
-├── excel_mcp/                  # Core MCP Server Package
+├── package.json                # Dual-face DSH manifest (dsh.bundle + dsh.client)
+├── cordis.patch.yml            # DSH bundle patch (mounts host plugin + MCP client)
+├── index.js                    # Host Cordis plugin (runtime config + /api/excel-studio/* routes)
+├── client.js                   # Zero-build DSH Web UI plugin (sidebar icon + Excel Studio editor)
+├── pyproject.toml              # Python build & dependency metadata
+├── requirements.txt            # Pinned Python dependencies
+├── dsh_config_example.yml      # Manual DSH cordis.patch.yml snippet
+├── excel_mcp/                  # Core Python Excel Engine & MCP Server
 │   ├── __init__.py             # Version definition
-│   ├── __main__.py             # Entry point (python -m excel_mcp)
+│   ├── __main__.py             # MCP entry point (python -m excel_mcp)
+│   ├── bridge.py               # JSON-over-STDIO bridge for the in-app Excel Studio Editor
 │   ├── server.py               # MCP Server setup & 24 tool definitions
 │   ├── config.py               # Environment configuration loader
 │   ├── logging_config.py       # Stderr-only logging (preserves stdout JSON-RPC)
@@ -44,7 +53,7 @@ deepseek-office-plugin/
 │   │   └── guard.py            # Safety confirmation & preview guard
 │   └── utils/
 │       └── excel_helpers.py    # Coordinate math (A1 <-> 1,1) & range parsers
-└── tests/                      # Automated Test Suite (52 unit & integration tests)
+└── tests/                      # Automated Test Suite (55 Python + 3 Node.js tests)
 ```
 
 ---
