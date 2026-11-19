@@ -3632,7 +3632,7 @@
                       h('span', null, zoom + '%'),
                       h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, '+')
                     ),
-                    h('span', null, 'v0.8.0')
+                    h('span', null, 'v0.8.1')
                   )
                 )
               : null
