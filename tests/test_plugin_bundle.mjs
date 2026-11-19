@@ -67,6 +67,28 @@ test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS
     assert.ok(routes.has('/api/excel-studio/sheet-op'))
     assert.ok(routes.has('/api/excel-studio/summary'))
 
+    // Every DSH fetch route must declare requestBody: 'buffered' to avoid http-bridge.ts HTTP 400
+    for (const [routePath, route] of routes.entries()) {
+      assert.equal(route.requestBody, 'buffered', `Route ${routePath} must set requestBody: 'buffered'`)
+    }
+    const wbRoute = routes.get('/api/excel-studio/workbooks')
+    assert.ok(wbRoute.methods.includes('GET') && wbRoute.methods.includes('POST'))
+
+    // 0. Verify both GET and POST /api/excel-studio/workbooks succeed on first open
+    const listGetRes = await wbRoute.fetch(new Request('http://localhost/api/excel-studio/workbooks', { method: 'GET' }))
+    assert.equal(listGetRes.status, 200)
+    assert.equal((await listGetRes.json()).ok, true)
+
+    const listPostRes = await wbRoute.fetch(
+      new Request('http://localhost/api/excel-studio/workbooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+    )
+    assert.equal(listPostRes.status, 200)
+    assert.equal((await listPostRes.json()).ok, true)
+
     // 1. Create a new workbook in tmpDir
     const createRes = await routes.get('/api/excel-studio/create').fetch(
       new Request('http://localhost/api/excel-studio/create', {
@@ -81,7 +103,7 @@ test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS
     assert.equal(createJson.data.active_sheet, 'Q1')
     const createdPath = createJson.data.file_path
 
-    // 2. Save edits + formatting (with automatic .dsh_backup snapshot)
+    // 2. Save edits + formatting + notes + merges (with automatic .dsh_backup snapshot)
     const saveRes = await routes.get('/api/excel-studio/save').fetch(
       new Request('http://localhost/api/excel-studio/save', {
         method: 'POST',
@@ -100,6 +122,8 @@ test('index.js mounts /api/excel-studio/* routes with bundled in-process ExcelJS
             { cell: 'A1', bold: true, fill_color: '#1F4E79', font_color: '#FFFFFF' },
             { cell: 'B2', number_format: '$#,##0.00', align: 'right' },
           ],
+          notes: { A1: 'Header note' },
+          merges: ['C1:D1'],
         }),
       })
     )

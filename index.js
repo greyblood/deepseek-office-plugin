@@ -84,10 +84,15 @@ export function registerEditorRoutes(connCtx, runtime) {
   const routes = [
     {
       path: '/api/excel-studio/workbooks',
-      methods: ['GET'],
+      methods: ['GET', 'POST'],
+      requestBody: 'buffered',
       fetch: async (request) => {
         const url = new URL(request.url)
-        const directory = url.searchParams.get('directory') || undefined
+        let directory = url.searchParams.get('directory') || undefined
+        if (!directory && request.method === 'POST') {
+          const payload = await readJsonBody(request)
+          directory = payload.directory || undefined
+        }
         return handleAction(() => listWorkbooks({ allowedDirs, directory }))
       },
     },
