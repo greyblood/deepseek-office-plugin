@@ -160,6 +160,15 @@
     '.dsh-xl-banner-info { background: #e8f5ee; color: #107c41; border-bottom: 1px solid #badbcc; }',
     '.dsh-xl-findbar { display: flex; align-items: center; gap: 6px; padding: 5px 12px; background: var(--dsw-alias-bg-secondary, #f3f3f3); border-bottom: 1px solid #d9d9d9; flex-shrink: 0; flex-wrap: wrap; }',
     '.dsh-xl-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 32px; text-align: center; }',
+    '.dsh-xl-cell-precedent { box-shadow: inset 0 0 0 2px #1a73e8 !important; background-color: rgba(26, 115, 232, 0.1) !important; }',
+    '.dsh-xl-cell-dependent { box-shadow: inset 0 0 0 2px #0f9d58 !important; background-color: rgba(15, 157, 88, 0.1) !important; }',
+    '.dsh-xl-cell-printarea { box-shadow: inset 0 0 0 1px #6b21a8; }',
+    '.dsh-xl-pagebreak-row td { border-bottom: 2px dashed #1a73e8 !important; }',
+    '.dsh-xl-pagebreak-col { border-right: 2px dashed #1a73e8 !important; }',
+    '.dsh-xl-note-inline { position: absolute; top: 2px; right: 2px; background: #fef3c7; color: #78350f; border: 1px solid #d97706; border-radius: 3px; padding: 1px 4px; font-size: 9px; max-width: 90px; overflow: hidden; text-overflow: ellipsis; pointer-events: none; z-index: 4; }',
+    '.dsh-xl-symbol-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }',
+    '.dsh-xl-symbol-btn { height: 34px; border: 1px solid rgba(127,127,127,0.3); border-radius: 4px; background: transparent; color: inherit; font-size: 16px; cursor: pointer; }',
+    '.dsh-xl-symbol-btn:hover { background: rgba(16,124,65,0.14); border-color: #107c41; }',
     '.dsh-xl-btn-primary { height: 28px; padding: 0 14px; border-radius: 4px; border: none; background: #107c41; color: #ffffff; font-weight: 600; font-size: 12px; cursor: pointer; }',
     '.dsh-xl-btn-primary:hover { background: #0d6635; }',
   ].join('\n');
@@ -750,11 +759,66 @@
     return tokens;
   }
 
-  function evalExcelFormula(expr, getRawFn, depth) {
+  var EXCEL_THEMES = {
+    office: { label: 'Office', primary: '#107c41', headerBg: '#1F4E79', stripeBg: '#F2F6FC' },
+    green: { label: 'Classic Green', primary: '#107c41', headerBg: '#107c41', stripeBg: '#EBF7F0' },
+    slate: { label: 'Slate Dark', primary: '#334155', headerBg: '#1E293B', stripeBg: '#F1F5F9' },
+    warm: { label: 'Warm Earth', primary: '#9A3412', headerBg: '#C2410C', stripeBg: '#FFF7ED' },
+    ocean: { label: 'Ocean Blue', primary: '#0369A1', headerBg: '#0284C7', stripeBg: '#F0F9FF' },
+  };
+
+  var EXCEL_SYMBOLS = [
+    '±', '≤', '≥', '≠', '≈', '÷', '×',
+    '°', '€', '£', '¥', '¢', '©', '®',
+    '™', '∑', '√', '∞', 'π', 'α', 'β',
+    'Δ', 'μ', 'σ', '→', '↑', '↓', '✓',
+  ];
+
+  function substituteNamedRanges(exprBody, namedRanges) {
+    if (!namedRanges) return exprBody;
+    var keys = Object.keys(namedRanges);
+    if (!keys.length) return exprBody;
+    keys.sort(function (a, b) { return b.length - a.length; });
+    var out = exprBody;
+    for (var i = 0; i < keys.length; i++) {
+      var nm = keys[i];
+      var ref = namedRanges[nm];
+      if (!ref) continue;
+      var re = new RegExp('\\b' + nm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
+      out = out.replace(re, ref);
+    }
+    return out;
+  }
+
+  function extractFormulaRefs(expr, namedRanges) {
+    var body = String(expr || '').trim();
+    if (!body.startsWith('=')) return [];
+    var resolved = substituteNamedRanges(body.slice(1), namedRanges);
+    var refs = {};
+    var rangeRe = /\$?([A-Z]{1,3})\$?(\d+):\$?([A-Z]{1,3})\$?(\d+)/gi;
+    var m;
+    while ((m = rangeRe.exec(resolved)) !== null) {
+      var p1 = parseCoord(m[1] + m[2]), p2 = parseCoord(m[3] + m[4]);
+      if (p1 && p2) {
+        var norm = normalizeRange(p1, p2);
+        for (var r = norm.r1; r <= norm.r2; r++) {
+          for (var c = norm.c1; c <= norm.c2; c++) refs[makeCoord(r, c)] = true;
+        }
+      }
+    }
+    var cellRe = /\$?([A-Z]{1,3})\$?(\d+)/gi;
+    while ((m = cellRe.exec(resolved)) !== null) {
+      var p = parseCoord(m[1] + m[2]);
+      if (p) refs[makeCoord(p.row, p.col)] = true;
+    }
+    return Object.keys(refs);
+  }
+
+  function evalExcelFormula(expr, getRawFn, depth, namedRanges) {
     if (depth > 12) return '#REF!';
     var body = String(expr || '').trim();
     if (!body.startsWith('=')) return body;
-    var tokens = tokenizeFormula(body.slice(1));
+    var tokens = tokenizeFormula(substituteNamedRanges(body.slice(1), namedRanges));
     var pos = 0;
 
     function peek() { return tokens[pos]; }
@@ -762,7 +826,7 @@
 
     function evalCellRef(coordStr) {
       var raw = getRawFn(coordStr.replace(/\$/g, '').toUpperCase());
-      if (typeof raw === 'string' && raw.startsWith('=')) return evalExcelFormula(raw, getRawFn, depth + 1);
+      if (typeof raw === 'string' && raw.startsWith('=')) return evalExcelFormula(raw, getRawFn, depth + 1, namedRanges);
       if (raw === '' || raw === null || raw === undefined) return '';
       var n = Number(raw);
       return Number.isFinite(n) && String(raw).trim() !== '' ? n : raw;
@@ -994,25 +1058,47 @@
           var sUndo = useState([]), undoStack = sUndo[0], setUndoStack = sUndo[1];
           var sRedo = useState([]), redoStack = sRedo[0], setRedoStack = sRedo[1];
           var clipboardRef = useRef(null);
+          var clipboardStylesRef = useRef(null);
           var formatPainterRef = useRef(null);
+          var fileInputRef = useRef(null);
           var sPainterOn = useState(false), painterActive = sPainterOn[0], setPainterActive = sPainterOn[1];
 
-          // View & Review options
+          // View, Page Layout & Review options
           var sGridlines = useState(true), showGridlines = sGridlines[0], setShowGridlines = sGridlines[1];
           var sFormulaBar = useState(true), showFormulaBar = sFormulaBar[0], setShowFormulaBar = sFormulaBar[1];
           var sHeadings = useState(true), showHeadings = sHeadings[0], setShowHeadings = sHeadings[1];
+          var sStatusBar = useState(true), showStatusBar = sStatusBar[0], setShowStatusBar = sStatusBar[1];
           var sFreezeTop = useState(false), freezeTopRow = sFreezeTop[0], setFreezeTopRow = sFreezeTop[1];
           var sFreezeCol = useState(false), freezeFirstCol = sFreezeCol[0], setFreezeFirstCol = sFreezeCol[1];
           var sShowFormulas = useState(false), showFormulas = sShowFormulas[0], setShowFormulas = sShowFormulas[1];
           var sProtected = useState(false), sheetProtected = sProtected[0], setSheetProtected = sProtected[1];
+          var sWbProtected = useState(false), workbookProtected = sWbProtected[0], setWorkbookProtected = sWbProtected[1];
           var sZoom = useState(100), zoom = sZoom[0], setZoom = sZoom[1];
+          var sTheme = useState('office'), themeKey = sTheme[0], setThemeKey = sTheme[1];
+          var sPageBreak = useState(false), pageBreakView = sPageBreak[0], setPageBreakView = sPageBreak[1];
+          var sFocusMode = useState(false), focusMode = sFocusMode[0], setFocusMode = sFocusMode[1];
+          var sRtl = useState(false), sheetRtl = sRtl[0], setSheetRtl = sRtl[1];
+          var sShowAllNotes = useState(false), showAllNotes = sShowAllNotes[0], setShowAllNotes = sShowAllNotes[1];
+          var sPrintCfg = useState({ orientation: 'portrait', margin: 'normal', paper: 'Letter', scale: 100, printArea: '' }), printCfg = sPrintCfg[0], setPrintCfg = sPrintCfg[1];
+
+          // Formulas, Auditing, Data Tools & Outline
+          var sNamedRanges = useState({}), namedRanges = sNamedRanges[0], setNamedRanges = sNamedRanges[1];
+          var sPrecedents = useState({}), precedentMap = sPrecedents[0], setPrecedentMap = sPrecedents[1];
+          var sDependents = useState({}), dependentMap = sDependents[0], setDependentMap = sDependents[1];
+          var sCalcMode = useState('auto'), calcMode = sCalcMode[0], setCalcMode = sCalcMode[1];
+          var sCalcTick = useState(0), calcTick = sCalcTick[0], setCalcTick = sCalcTick[1];
+          var sValidations = useState({}), validations = sValidations[0], setValidations = sValidations[1];
+          var sHiddenRows = useState({}), hiddenRows = sHiddenRows[0], setHiddenRows = sHiddenRows[1];
+          var sHiddenCols = useState({}), hiddenCols = sHiddenCols[0], setHiddenCols = sHiddenCols[1];
+          var sRowHeights = useState({}), rowHeights = sRowHeights[0], setRowHeights = sRowHeights[1];
+          var sHyperlinks = useState({}), hyperlinks = sHyperlinks[0], setHyperlinks = sHyperlinks[1];
 
           // Conditional formatting & AutoFilter
           var sCondRule = useState(null), condRule = sCondRule[0], setCondRule = sCondRule[1];
           var sFilterOn = useState(false), autoFilterOn = sFilterOn[0], setAutoFilterOn = sFilterOn[1];
           var sFilterQuery = useState(''), filterQuery = sFilterQuery[0], setFilterQuery = sFilterQuery[1];
 
-          // Modals / Drawers: Insert Function (fx), Chart, Summary, Find & Replace, Context Menu
+          // Modals / Drawers
           var sFxOpen = useState(false), fxModalOpen = sFxOpen[0], setFxModalOpen = sFxOpen[1];
           var sFxCat = useState('All'), fxCategory = sFxCat[0], setFxCategory = sFxCat[1];
           var sFxSearch = useState(''), fxSearch = sFxSearch[0], setFxSearch = sFxSearch[1];
@@ -1027,7 +1113,31 @@
           var sNewName = useState('Book1.xlsx'), newFilename = sNewName[0], setNewFilename = sNewName[1];
           var sOpenPath = useState(''), openPathInput = sOpenPath[0], setOpenPathInput = sOpenPath[1];
 
+          var sPivotOpen = useState(false), pivotOpen = sPivotOpen[0], setPivotOpen = sPivotOpen[1];
+          var sPivotCfg = useState({ rowCol: 1, valCol: 2, agg: 'SUM' }), pivotCfg = sPivotCfg[0], setPivotCfg = sPivotCfg[1];
+          var sGoalSeekOpen = useState(false), goalSeekOpen = sGoalSeekOpen[0], setGoalSeekOpen = sGoalSeekOpen[1];
+          var sGoalCfg = useState({ targetCell: 'B5', targetVal: '100', changingCell: 'B2' }), goalCfg = sGoalCfg[0], setGoalCfg = sGoalCfg[1];
+          var sNameMgrOpen = useState(false), nameMgrOpen = sNameMgrOpen[0], setNameMgrOpen = sNameMgrOpen[1];
+          var sNewDefName = useState(''), newDefName = sNewDefName[0], setNewDefName = sNewDefName[1];
+          var sNewDefRef = useState(''), newDefRef = sNewDefRef[0], setNewDefRef = sNewDefRef[1];
+          var sValOpen = useState(false), valModalOpen = sValOpen[0], setValModalOpen = sValOpen[1];
+          var sValCfg = useState({ type: 'number', min: '0', max: '1000', list: 'Yes,No,Pending' }), valCfg = sValCfg[0], setValCfg = sValCfg[1];
+          var sSymbolOpen = useState(false), symbolOpen = sSymbolOpen[0], setSymbolOpen = sSymbolOpen[1];
+          var sStatsOpen = useState(false), statsOpen = sStatsOpen[0], setStatsOpen = sStatsOpen[1];
+          var sCustomSortOpen = useState(false), customSortOpen = sCustomSortOpen[0], setCustomSortOpen = sCustomSortOpen[1];
+          var sSortCfg = useState({ col: 1, asc: true }), sortCfg = sSortCfg[0], setSortCfg = sSortCfg[1];
+
+          var activeTheme = EXCEL_THEMES[themeKey] || EXCEL_THEMES.office;
+
           useEffect(function () { ensureStyles(); }, []);
+          useEffect(function () {
+            if (typeof document === 'undefined' || !document.head) return;
+            var pid = 'dsh-xl-print-style';
+            var stEl = document.getElementById(pid);
+            if (!stEl) { stEl = document.createElement('style'); stEl.id = pid; document.head.appendChild(stEl); }
+            var mVal = printCfg.margin === 'narrow' ? '0.25in' : printCfg.margin === 'wide' ? '1in' : '0.5in';
+            stEl.textContent = '@page { size: ' + printCfg.paper + ' ' + printCfg.orientation + '; margin: ' + mVal + '; }';
+          }, [printCfg]);
           useEffect(function () {
             var onUp = function () { isDraggingRef.current = false; isFillingRef.current = false; };
             var onClick = function () { setCtxMenu(null); };
@@ -1065,11 +1175,12 @@
             var st = getCellStyle(coord);
             if (showFormulas) return String(raw);
             if (typeof raw === 'string' && raw.startsWith('=')) {
-              var computed = evalExcelFormula(raw, getCellRaw, 0);
+              if (calcMode === 'manual' && calcTick < 0) return String(raw);
+              var computed = evalExcelFormula(raw, getCellRaw, 0, namedRanges);
               return formatDisplayValue(computed, st.numberFormat || st.number_format);
             }
             return formatDisplayValue(raw, st.numberFormat || st.number_format);
-          }, [getCellRaw, getCellStyle, showFormulas]);
+          }, [getCellRaw, getCellStyle, showFormulas, namedRanges, calcMode, calcTick]);
 
           var pushUndoSnapshot = useCallback(function () {
             setUndoStack(function (stack) {
@@ -1140,9 +1251,28 @@
 
           var setCellValuesBatch = useCallback(function (updates) {
             if (sheetProtected) { setError('Sheet is protected (read-only). Unlock in Review tab.'); return; }
+            var coords = Object.keys(updates);
+            for (var i = 0; i < coords.length; i++) {
+              var co = coords[i], val = updates[co], rule = validations[co];
+              if (rule && val !== '' && !String(val).startsWith('=')) {
+                if (rule.type === 'number') {
+                  var n = Number(val);
+                  if (!Number.isFinite(n) || n < Number(rule.min) || n > Number(rule.max)) {
+                    setError('Data Validation failed on ' + co + ': value must be between ' + rule.min + ' and ' + rule.max + '.');
+                    return;
+                  }
+                } else if (rule.type === 'list') {
+                  var allowed = String(rule.list || '').split(',').map(function (s) { return s.trim(); });
+                  if (allowed.indexOf(String(val).trim()) === -1) {
+                    setError('Data Validation failed on ' + co + ': allowed values are ' + allowed.join(', ') + '.');
+                    return;
+                  }
+                }
+              }
+            }
             pushUndoSnapshot();
             setPendingEdits(function (cur) { return Object.assign({}, cur, updates); });
-          }, [sheetProtected, pushUndoSnapshot]);
+          }, [sheetProtected, validations, pushUndoSnapshot]);
 
           var applyFormatToSelection = useCallback(function (patch) {
             if (!sheet) return;
@@ -1188,31 +1318,52 @@
 
           var handleCopy = useCallback(function (isCut) {
             if (!sheet) return;
-            var rows = [], clearMap = {};
+            var rows = [], styleRows = [], clearMap = {};
             for (var r = selNorm.r1; r <= selNorm.r2; r++) {
-              var rowVals = [];
+              var rowVals = [], rowSt = [];
               for (var c = selNorm.c1; c <= selNorm.c2; c++) {
                 var coord = makeCoord(r, c);
-                rowVals.push(getCellRaw(coord));
+                rowVals.push({ raw: getCellRaw(coord), disp: getCellDisplay(coord) });
+                rowSt.push(getCellStyle(coord));
                 if (isCut) clearMap[coord] = '';
               }
               rows.push(rowVals);
+              styleRows.push(rowSt);
             }
             clipboardRef.current = rows;
+            clipboardStylesRef.current = styleRows;
             if (isCut) setCellValuesBatch(clearMap);
             setNotice((isCut ? 'Cut ' : 'Copied ') + formatRangeLabel(selStart, selEnd));
-          }, [sheet, selNorm, selStart, selEnd, getCellRaw, setCellValuesBatch]);
+          }, [sheet, selNorm, selStart, selEnd, getCellRaw, getCellDisplay, getCellStyle, setCellValuesBatch]);
 
-          var handlePaste = useCallback(function () {
+          var handlePaste = useCallback(function (mode) {
             if (!sheet || !clipboardRef.current) return;
-            var matrix = clipboardRef.current, updates = {};
-            for (var r = 0; r < matrix.length; r++) {
-              for (var c = 0; c < matrix[r].length; c++) {
-                updates[makeCoord(selStart.row + r, selStart.col + c)] = matrix[r][c];
+            var pasteMode = mode || 'all';
+            var matrix = clipboardRef.current;
+            var sMatrix = clipboardStylesRef.current;
+            if (pasteMode === 'all' || pasteMode === 'values') {
+              var updates = {};
+              for (var r = 0; r < matrix.length; r++) {
+                for (var c = 0; c < matrix[r].length; c++) {
+                  var item = matrix[r][c];
+                  updates[makeCoord(selStart.row + r, selStart.col + c)] = pasteMode === 'values' ? item.disp : item.raw;
+                }
               }
+              setCellValuesBatch(updates);
             }
-            setCellValuesBatch(updates);
-          }, [sheet, selStart, setCellValuesBatch]);
+            if ((pasteMode === 'all' || pasteMode === 'formats') && sMatrix) {
+              pushUndoSnapshot();
+              setPendingFormats(function (cur) {
+                var next = Object.assign({}, cur);
+                for (var r2 = 0; r2 < sMatrix.length; r2++) {
+                  for (var c2 = 0; c2 < sMatrix[r2].length; c2++) {
+                    next[makeCoord(selStart.row + r2, selStart.col + c2)] = Object.assign({}, sMatrix[r2][c2]);
+                  }
+                }
+                return next;
+              });
+            }
+          }, [sheet, selStart, setCellValuesBatch, pushUndoSnapshot]);
 
           var handleClearSelection = function (mode) {
             if (!sheet) return;
@@ -1247,10 +1398,22 @@
                 var topVal = getCellRaw(makeCoord(selNorm.r1, c));
                 for (var r = selNorm.r1 + 1; r <= selNorm.r2; r++) updates[makeCoord(r, c)] = topVal;
               }
-            } else {
+            } else if (dir === 'right') {
               for (var r2 = selNorm.r1; r2 <= selNorm.r2; r2++) {
                 var leftVal = getCellRaw(makeCoord(r2, selNorm.c1));
                 for (var c2 = selNorm.c1 + 1; c2 <= selNorm.c2; c2++) updates[makeCoord(r2, c2)] = leftVal;
+              }
+            } else if (dir === 'series') {
+              var stepStr = window.prompt('Fill Series step value (e.g. 1, 5, 10):', '1');
+              var step = Number(stepStr);
+              if (stepStr === null || !Number.isFinite(step)) return;
+              var startNum = Number(getCellRaw(makeCoord(selNorm.r1, selNorm.c1))) || 1;
+              var idx = 0;
+              for (var rs = selNorm.r1; rs <= selNorm.r2; rs++) {
+                for (var cs = selNorm.c1; cs <= selNorm.c2; cs++) {
+                  updates[makeCoord(rs, cs)] = String(startNum + idx * step);
+                  idx++;
+                }
               }
             }
             if (Object.keys(updates).length) setCellValuesBatch(updates);
@@ -1319,7 +1482,7 @@
 
           var handleTextToColumns = function () {
             if (!sheet) return;
-            var delim = window.prompt('Split selected column by delimiter (e.g. , or space):', ',');
+            var delim = window.prompt('Split selected column by delimiter (e.g. , or ; or space):', ',');
             if (delim === null || delim === '') return;
             var updates = {};
             for (var r = selNorm.r1; r <= selNorm.r2; r++) {
@@ -1328,6 +1491,256 @@
             }
             setCellValuesBatch(updates);
             setNotice('Split column ' + colIndexToLetter(selNorm.c1) + ' using "' + delim + '".');
+          };
+
+          var handleAutoFitCol = function () {
+            if (!sheet) return;
+            var letter = colIndexToLetter(selStart.col);
+            var maxLen = 8, maxR = (sheet && sheet.row_count) || 40;
+            for (var r = 1; r <= maxR; r++) {
+              var d = String(getCellDisplay(makeCoord(r, selStart.col)) || '');
+              if (d.length > maxLen) maxLen = d.length;
+            }
+            var w = Math.min(48, Math.max(10, maxLen + 3));
+            setPendingColWidths(function (cur) { var n = Object.assign({}, cur); n[letter] = w; return n; });
+            setNotice('AutoFit column ' + letter + ' to width ' + w);
+          };
+
+          var handleTranspose = function () {
+            if (!sheet) return;
+            var updates = {};
+            var hR = selNorm.r2 - selNorm.r1 + 1, hC = selNorm.c2 - selNorm.c1 + 1;
+            var buf = [];
+            for (var r = 0; r < hR; r++) {
+              buf[r] = [];
+              for (var c = 0; c < hC; c++) {
+                buf[r][c] = getCellRaw(makeCoord(selNorm.r1 + r, selNorm.c1 + c));
+                updates[makeCoord(selNorm.r1 + r, selNorm.c1 + c)] = '';
+              }
+            }
+            for (var r2 = 0; r2 < hR; r2++) {
+              for (var c2 = 0; c2 < hC; c2++) {
+                updates[makeCoord(selNorm.r1 + c2, selNorm.c1 + r2)] = buf[r2][c2];
+              }
+            }
+            setCellValuesBatch(updates);
+            setNotice('Transposed ' + formatRangeLabel(selStart, selEnd));
+          };
+
+          var handleFlashFill = function () {
+            if (!sheet || selStart.col <= 1) { setError('Select a column to the right of your source data for Flash Fill.'); return; }
+            var srcCol = selStart.col - 1, dstCol = selStart.col;
+            var sampleSrc = String(getCellDisplay(makeCoord(selStart.row, srcCol)) || '');
+            var sampleDst = String(getCellDisplay(makeCoord(selStart.row, dstCol)) || '');
+            if (!sampleSrc || !sampleDst) { setError('Enter an example in ' + activeCoord + ' based on ' + makeCoord(selStart.row, srcCol) + ' first.'); return; }
+            var mode = 'copy';
+            if (sampleDst === sampleSrc.toUpperCase()) mode = 'upper';
+            else if (sampleDst === sampleSrc.toLowerCase()) mode = 'lower';
+            else if (sampleSrc.indexOf(' ') !== -1 && sampleDst === sampleSrc.split(' ')[0]) mode = 'firstWord';
+            else if (sampleSrc.indexOf(' ') !== -1 && sampleDst === sampleSrc.split(' ').slice(-1)[0]) mode = 'lastWord';
+            var updates = {}, count = 0, maxR = (sheet && sheet.row_count) || 40;
+            for (var r = selStart.row + 1; r <= maxR; r++) {
+              var s = String(getCellDisplay(makeCoord(r, srcCol)) || '');
+              if (!s) break;
+              var out = mode === 'upper' ? s.toUpperCase() : mode === 'lower' ? s.toLowerCase() : mode === 'firstWord' ? s.split(' ')[0] : mode === 'lastWord' ? s.split(' ').slice(-1)[0] : s;
+              updates[makeCoord(r, dstCol)] = out;
+              count++;
+            }
+            if (count > 0) { setCellValuesBatch(updates); setNotice('Flash Fill populated ' + count + ' cell(s) using "' + mode + '" pattern.'); }
+            else setNotice('No adjacent rows below to Flash Fill.');
+          };
+
+          var handleTracePrecedents = function () {
+            var raw = getCellRaw(activeCoord);
+            var refs = extractFormulaRefs(raw, namedRanges);
+            if (!refs.length) { setNotice(activeCoord + ' has no formula precedents.'); setPrecedentMap({}); return; }
+            var map = {};
+            for (var i = 0; i < refs.length; i++) map[refs[i]] = true;
+            setPrecedentMap(map);
+            setNotice('Precedents of ' + activeCoord + ': ' + refs.join(', '));
+          };
+
+          var handleTraceDependents = function () {
+            if (!sheet) return;
+            var map = {}, maxR = sheet.row_count || 40, maxC = sheet.col_count || 16;
+            for (var r = 1; r <= maxR; r++) {
+              for (var c = 1; c <= maxC; c++) {
+                var co = makeCoord(r, c);
+                var raw = getCellRaw(co);
+                if (typeof raw === 'string' && raw.startsWith('=')) {
+                  var refs = extractFormulaRefs(raw, namedRanges);
+                  if (refs.indexOf(activeCoord) !== -1) map[co] = true;
+                }
+              }
+            }
+            setDependentMap(map);
+            var list = Object.keys(map);
+            setNotice(list.length ? ('Dependents of ' + activeCoord + ': ' + list.join(', ')) : (activeCoord + ' has no formula dependents.'));
+          };
+
+          var handleErrorCheck = function () {
+            if (!sheet) return;
+            var maxR = sheet.row_count || 40, maxC = sheet.col_count || 16, errs = [];
+            for (var r = 1; r <= maxR; r++) {
+              for (var c = 1; c <= maxC; c++) {
+                var co = makeCoord(r, c), d = getCellDisplay(co);
+                if (isExcelErr(d)) errs.push({ r: r, c: c, co: co, err: d });
+              }
+            }
+            if (!errs.length) { setNotice('Error Check complete: 0 formula errors found.'); return; }
+            selectCell(errs[0].r, errs[0].c, false, false);
+            setError('Found ' + errs.length + ' error(s). First: ' + errs[0].co + ' (' + errs[0].err + ')');
+          };
+
+          var handleRunGoalSeek = function () {
+            var tCoord = String(goalCfg.targetCell || '').trim().toUpperCase();
+            var cCoord = String(goalCfg.changingCell || '').trim().toUpperCase();
+            var targetNum = Number(goalCfg.targetVal);
+            if (!parseCoord(tCoord) || !parseCoord(cCoord) || !Number.isFinite(targetNum)) {
+              setError('Enter valid target cell, numeric target value, and changing cell.');
+              return;
+            }
+            var tFormula = getCellRaw(tCoord);
+            if (!String(tFormula).startsWith('=')) { setError('Target cell ' + tCoord + ' must contain a formula.'); return; }
+            var evalWithX = function (xVal) {
+              var getter = function (co) { return co === cCoord ? String(xVal) : getCellRaw(co); };
+              return Number(evalExcelFormula(tFormula, getter, 0, namedRanges));
+            };
+            var x0 = Number(getCellRaw(cCoord)) || 1, x1 = x0 + 1;
+            var f0 = evalWithX(x0) - targetNum, f1 = evalWithX(x1) - targetNum;
+            for (var iter = 0; iter < 50; iter++) {
+              if (Math.abs(f1) < 1e-6) break;
+              var denom = f1 - f0;
+              if (!Number.isFinite(denom) || Math.abs(denom) < 1e-12) break;
+              var x2 = x1 - f1 * (x1 - x0) / denom;
+              x0 = x1; f0 = f1; x1 = x2; f1 = evalWithX(x1) - targetNum;
+            }
+            if (!Number.isFinite(x1)) { setError('Goal Seek could not converge.'); return; }
+            var rounded = Math.round(x1 * 1e6) / 1e6;
+            var upd = {}; upd[cCoord] = String(rounded);
+            setCellValuesBatch(upd);
+            setGoalSeekOpen(false);
+            setNotice('Goal Seek converged: ' + cCoord + ' = ' + rounded + ' -> ' + tCoord + ' ≈ ' + targetNum);
+          };
+
+          var handleTransformText = function (mode) {
+            if (!sheet) return;
+            var updates = {};
+            for (var r = selNorm.r1; r <= selNorm.r2; r++) {
+              for (var c = selNorm.c1; c <= selNorm.c2; c++) {
+                var co = makeCoord(r, c), raw = String(getCellRaw(co) || '');
+                if (!raw || raw.startsWith('=')) continue;
+                if (mode === 'trim') updates[co] = raw.trim().replace(/\s+/g, ' ');
+                else if (mode === 'upper') updates[co] = raw.toUpperCase();
+                else if (mode === 'lower') updates[co] = raw.toLowerCase();
+                else if (mode === 'proper') updates[co] = raw.toLowerCase().replace(/\b\w/g, function (ch) { return ch.toUpperCase(); });
+              }
+            }
+            if (Object.keys(updates).length) { setCellValuesBatch(updates); setNotice('Applied ' + mode + ' transform to selection.'); }
+          };
+
+          var handleJumpNote = function (dir) {
+            var keys = Object.keys(pendingNotes).filter(function (k) { return Boolean(pendingNotes[k]); });
+            if (!keys.length) { setNotice('No notes in this sheet.'); return; }
+            var idx = keys.indexOf(activeCoord);
+            var nextKey = keys[(idx + dir + keys.length) % keys.length];
+            var p = parseCoord(nextKey);
+            if (p) { selectCell(p.row, p.col, false, false); setNotice('Note at ' + nextKey + ': ' + pendingNotes[nextKey]); }
+          };
+
+          var handleImportFile = function (e) {
+            var file = e.target.files && e.target.files[0];
+            if (!file || !sheet) return;
+            var reader = new FileReader();
+            reader.onload = function () {
+              var text = String(reader.result || '');
+              var updates = {};
+              if (file.name.toLowerCase().endsWith('.json')) {
+                try {
+                  var parsed = JSON.parse(text);
+                  var arr = Array.isArray(parsed) ? parsed : [parsed];
+                  if (arr.length && typeof arr[0] === 'object') {
+                    var cols = Object.keys(arr[0]);
+                    for (var ci = 0; ci < cols.length; ci++) updates[makeCoord(1, ci + 1)] = cols[ci];
+                    for (var ri = 0; ri < arr.length; ri++) {
+                      for (var ci2 = 0; ci2 < cols.length; ci2++) updates[makeCoord(ri + 2, ci2 + 1)] = arr[ri][cols[ci2]] != null ? String(arr[ri][cols[ci2]]) : '';
+                    }
+                  }
+                } catch (err) { setError('Invalid JSON file: ' + err.message); return; }
+              } else {
+                var lines = text.split(/\r?\n/).filter(function (l) { return l.length > 0; });
+                var sep = text.indexOf('\t') !== -1 ? '\t' : ',';
+                for (var r = 0; r < lines.length; r++) {
+                  var parts = lines[r].split(sep);
+                  for (var c = 0; c < parts.length; c++) updates[makeCoord(r + 1, c + 1)] = parts[c].replace(/^"|"$/g, '').trim();
+                }
+              }
+              setCellValuesBatch(updates);
+              setNotice('Imported ' + file.name + ' (' + Object.keys(updates).length + ' cells). Click Save to write to .xlsx.');
+            };
+            reader.readAsText(file);
+            e.target.value = '';
+          };
+
+          var handleExportJson = function () {
+            if (!sheet) return;
+            var maxR = Math.max(sheet.max_row || 1, 1), maxC = Math.max(sheet.max_column || 1, 1);
+            var headers = [], rows = [];
+            for (var c = 1; c <= maxC; c++) headers.push(String(getCellDisplay(makeCoord(1, c)) || colIndexToLetter(c)));
+            for (var r = 2; r <= maxR; r++) {
+              var obj = {}, hasVal = false;
+              for (var c2 = 1; c2 <= maxC; c2++) {
+                var v = getCellDisplay(makeCoord(r, c2));
+                if (v !== '') hasVal = true;
+                obj[headers[c2 - 1]] = v;
+              }
+              if (hasVal) rows.push(obj);
+            }
+            var blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a'); a.href = url; a.download = (sheet.active_sheet || 'sheet') + '.json'; a.click();
+            URL.revokeObjectURL(url); setFileMenuOpen(false);
+          };
+
+          var handleExportHtml = function () {
+            if (!sheet) return;
+            var maxR = Math.max(sheet.max_row || 1, 1), maxC = Math.max(sheet.max_column || 1, 1);
+            var html = '<!doctype html><html><head><meta charset="utf-8"><style>table{border-collapse:collapse;font-family:sans-serif;font-size:13px}td,th{border:1px solid #ccc;padding:5px 8px}</style></head><body><table>';
+            for (var r = 1; r <= maxR; r++) {
+              html += '<tr>';
+              for (var c = 1; c <= maxC; c++) {
+                var tag = r === 1 ? 'th' : 'td';
+                html += '<' + tag + '>' + String(getCellDisplay(makeCoord(r, c)) || '').replace(/</g, '&lt;') + '</' + tag + '>';
+              }
+              html += '</tr>';
+            }
+            html += '</table></body></html>';
+            var blob = new Blob([html], { type: 'text/html' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a'); a.href = url; a.download = (sheet.active_sheet || 'sheet') + '.html'; a.click();
+            URL.revokeObjectURL(url); setFileMenuOpen(false);
+          };
+
+          var computePivotRows = function () {
+            if (!sheet) return [];
+            var groups = {}, maxR = Math.max(sheet.max_row || 1, selNorm.r2);
+            for (var r = 2; r <= maxR; r++) {
+              var k = String(getCellDisplay(makeCoord(r, pivotCfg.rowCol)) || '').trim();
+              if (!k) continue;
+              var v = toNum(getCellDisplay(makeCoord(r, pivotCfg.valCol)));
+              if (!groups[k]) groups[k] = { count: 0, sum: 0, min: Infinity, max: -Infinity };
+              groups[k].count++;
+              if (!isNaN(v)) {
+                groups[k].sum += v;
+                if (v < groups[k].min) groups[k].min = v;
+                if (v > groups[k].max) groups[k].max = v;
+              }
+            }
+            return Object.keys(groups).sort().map(function (k) {
+              var g = groups[k];
+              var val = pivotCfg.agg === 'COUNT' ? g.count : pivotCfg.agg === 'AVERAGE' ? (g.count ? g.sum / g.count : 0) : pivotCfg.agg === 'MIN' ? (g.min === Infinity ? 0 : g.min) : pivotCfg.agg === 'MAX' ? (g.max === -Infinity ? 0 : g.max) : g.sum;
+              return { key: k, value: Math.round(val * 1e4) / 1e4 };
+            });
           };
 
           var handleSave = useCallback(function (targetPath) {
@@ -1540,15 +1953,19 @@
             'div',
             { className: 'dsh-xl-root', 'data-testid': 'excel-studio-panel' },
 
-            // 1. Excel Green Title & Quick Access Bar
+            // Hidden file input for Import CSV / TSV / JSON
+            h('input', { ref: fileInputRef, type: 'file', accept: '.csv,.tsv,.txt,.json', style: { display: 'none' }, onChange: handleImportFile }),
+
+            // 1. Excel Title & Quick Access Bar (themed)
             h(
-              'div', { className: 'dsh-xl-titlebar' },
+              'div', { className: 'dsh-xl-titlebar', style: { background: activeTheme.primary } },
               h(
                 'div', { className: 'dsh-xl-qat' },
                 h(ExcelStudioIcon, { size: 16 }),
                 h('button', { type: 'button', className: 'dsh-xl-qat-btn', title: 'Save (Ctrl+S)', disabled: !sheet || saving, onClick: function () { handleSave(); } }, saving ? 'Saving...' : 'Save'),
                 h('button', { type: 'button', className: 'dsh-xl-qat-btn', title: 'Undo (Ctrl+Z)', disabled: !undoStack.length, onClick: handleUndo }, '↶'),
-                h('button', { type: 'button', className: 'dsh-xl-qat-btn', title: 'Redo (Ctrl+Y)', disabled: !redoStack.length, onClick: handleRedo }, '↷')
+                h('button', { type: 'button', className: 'dsh-xl-qat-btn', title: 'Redo (Ctrl+Y)', disabled: !redoStack.length, onClick: handleRedo }, '↷'),
+                h('button', { type: 'button', className: 'dsh-xl-qat-btn', title: 'Print / PDF (Ctrl+P)', disabled: !sheet, onClick: function () { window.print(); } }, '🖨')
               ),
               h(
                 'div', { className: 'dsh-xl-title-center' },
@@ -1559,11 +1976,13 @@
                   workbooks.map(function (wb) { return h('option', { key: wb.path, value: wb.path }, wb.name + (wb.is_locked ? ' (locked)' : '')); })
                 ),
                 dirtyCount > 0 ? h('span', { className: 'dsh-xl-pill' }, dirtyCount + ' unsaved') : null,
-                sheetProtected ? h('span', { className: 'dsh-xl-pill' }, '🔒 Protected') : null
+                sheetProtected ? h('span', { className: 'dsh-xl-pill' }, '🔒 Sheet') : null,
+                workbookProtected ? h('span', { className: 'dsh-xl-pill' }, '🔐 Workbook') : null
               ),
               h(
                 'div', { className: 'dsh-xl-qat' },
                 h('button', { type: 'button', className: 'dsh-xl-qat-btn', disabled: !sheet, onClick: function () { setFindOpen(function (v) { return !v; }); } }, 'Find'),
+                h('button', { type: 'button', className: 'dsh-xl-qat-btn', title: 'Toggle Focus Mode (collapse ribbon)', onClick: function () { setFocusMode(function (v) { return !v; }); } }, focusMode ? 'Show Ribbon' : '⤢'),
                 h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { refreshWorkbooks(false); if (sheet) openWorkbook(sheet.file_path, sheet.active_sheet); } }, loading ? '...' : '↻')
               )
             ),
@@ -1571,12 +1990,12 @@
             // 2. Full Excel Menu Tabs Bar (File | Home | Insert | Page Layout | Formulas | Data | Review | View)
             h(
               'div', { className: 'dsh-xl-tabs-bar', role: 'tablist' },
-              h('button', { type: 'button', className: 'dsh-xl-menu-tab dsh-xl-file-tab', onClick: function (e) { e.stopPropagation(); setFileMenuOpen(function (v) { return !v; }); } }, 'File'),
+              h('button', { type: 'button', className: 'dsh-xl-menu-tab dsh-xl-file-tab', style: { background: activeTheme.primary }, onClick: function (e) { e.stopPropagation(); setFileMenuOpen(function (v) { return !v; }); } }, 'File'),
               ['Home', 'Insert', 'Page Layout', 'Formulas', 'Data', 'Review', 'View'].map(function (tab) {
                 return h('button', {
                   key: tab, type: 'button', role: 'tab', 'aria-selected': ribbonTab === tab,
                   className: 'dsh-xl-menu-tab ' + (ribbonTab === tab ? 'dsh-xl-menu-tab-active' : ''),
-                  onClick: function () { setRibbonTab(tab); setFileMenuOpen(false); },
+                  onClick: function () { setRibbonTab(tab); setFocusMode(false); setFileMenuOpen(false); },
                 }, tab);
               })
             ),
@@ -1585,11 +2004,17 @@
             fileMenuOpen
               ? h(
                   'div', { className: 'dsh-xl-file-menu', onClick: function (e) { e.stopPropagation(); } },
-                  h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { setShowNewForm(true); setFileMenuOpen(false); } }, h('span', null, 'New Blank Workbook'), h('span', { style: { opacity: 0.55 } }, 'Ctrl+N')),
-                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { handleSave(); setFileMenuOpen(false); } }, h('span', null, 'Save'), h('span', { style: { opacity: 0.55 } }, 'Ctrl+S')),
-                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { var d = window.prompt('Save As (.xlsx path):', sheet.file_path.replace(/\.xlsx$/i, '_copy.xlsx')); if (d && d.trim()) handleSave(d.trim()); setFileMenuOpen(false); } }, h('span', null, 'Save As...'), h('span', { style: { opacity: 0.55 } }, '.xlsx')),
-                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: handleExportCsv }, h('span', null, 'Export Active Sheet as CSV'), h('span', { style: { opacity: 0.55 } }, '.csv')),
-                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { setFileMenuOpen(false); window.print(); } }, h('span', null, 'Print / Export PDF'), h('span', { style: { opacity: 0.55 } }, 'Ctrl+P')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { setShowNewForm(true); setFileMenuOpen(false); } }, h('span', null, '📄 New Blank Workbook'), h('span', { style: { opacity: 0.55 } }, 'Ctrl+N')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { handleSave(); setFileMenuOpen(false); } }, h('span', null, '💾 Save'), h('span', { style: { opacity: 0.55 } }, 'Ctrl+S')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { var d = window.prompt('Save As (.xlsx path):', sheet.file_path.replace(/\.xlsx$/i, '_copy.xlsx')); if (d && d.trim()) handleSave(d.trim()); setFileMenuOpen(false); } }, h('span', null, '📁 Save As...'), h('span', { style: { opacity: 0.55 } }, '.xlsx')),
+                  h('div', { className: 'dsh-xl-menu-sep' }),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { setFileMenuOpen(false); if (fileInputRef.current) fileInputRef.current.click(); } }, h('span', null, '📥 Import CSV / TSV / JSON'), h('span', { style: { opacity: 0.55 } }, 'File')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: handleExportCsv }, h('span', null, '📤 Export as CSV'), h('span', { style: { opacity: 0.55 } }, '.csv')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: handleExportJson }, h('span', null, '📤 Export as JSON'), h('span', { style: { opacity: 0.55 } }, '.json')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: handleExportHtml }, h('span', null, '📤 Export as HTML Table'), h('span', { style: { opacity: 0.55 } }, '.html')),
+                  h('div', { className: 'dsh-xl-menu-sep' }),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { setFileMenuOpen(false); window.print(); } }, h('span', null, '🖨 Print / Export PDF'), h('span', { style: { opacity: 0.55 } }, 'Ctrl+P')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', disabled: !sheet, onClick: function () { setStatsOpen(true); setFileMenuOpen(false); } }, h('span', null, 'ℹ Workbook Info & Statistics'), h('span', { style: { opacity: 0.55 } }, '')),
                   h('div', { className: 'dsh-xl-menu-sep' }),
                   h('form', { style: { display: 'flex', gap: '4px', padding: '4px' }, onSubmit: function (e) { e.preventDefault(); if (openPathInput.trim()) openWorkbook(openPathInput.trim()); } },
                     h('input', { className: 'dsh-xl-rinput', style: { flex: 1 }, placeholder: 'Open .xlsx path...', value: openPathInput, onChange: function (e) { setOpenPathInput(e.target.value); } }),
@@ -1598,203 +2023,352 @@
                 )
               : null,
 
-            // 3. Full Excel Grouped Ribbon
-            h(
-              'div', { className: 'dsh-xl-ribbon' },
-              ribbonTab === 'Home'
-                ? [
-                    ribbonGroup('Clipboard', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: handlePaste }, h('span', { style: { fontSize: '14px' } }, '📋'), h('span', null, 'Paste')),
-                      h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleCopy(true); } }, '✂ Cut'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleCopy(false); } }, '⧉ Copy'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (painterActive ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { formatPainterRef.current = getCellStyle(activeCoord); setPainterActive(true); setNotice('Format Painter active: click a cell to apply style.'); } }, '🖌 Paint')
-                      )
-                    )),
-                    ribbonGroup('Font', [
-                      h('div', { key: 'f1', className: 'dsh-xl-rgroup-row' },
-                        h('select', { className: 'dsh-xl-rselect', style: { width: '104px' }, disabled: !sheet, value: curStyle.fontFamily || curStyle.font_family || 'Calibri', onChange: function (e) { applyFormatToSelection({ font_family: e.target.value }); } },
-                          ['Calibri', 'Arial', 'Segoe UI', 'Times New Roman', 'Consolas', 'Verdana', 'Georgia'].map(function (f) { return h('option', { key: f, value: f }, f); })
-                        ),
-                        h('select', { className: 'dsh-xl-rselect', style: { width: '48px' }, disabled: !sheet, value: String(curStyle.fontSize || curStyle.font_size || 11), onChange: function (e) { applyFormatToSelection({ font_size: Number(e.target.value) }); } },
-                          [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36].map(function (sz) { return h('option', { key: sz, value: String(sz) }, String(sz)); })
-                        ),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Increase Font Size', onClick: function () { applyFormatToSelection({ font_size: Math.min(36, (curStyle.fontSize || curStyle.font_size || 11) + 2) }); } }, 'A▲'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Decrease Font Size', onClick: function () { applyFormatToSelection({ font_size: Math.max(8, (curStyle.fontSize || curStyle.font_size || 11) - 2) }); } }, 'A▼')
-                      ),
-                      h('div', { key: 'f2', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.bold ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ bold: !curStyle.bold }); } }, h('strong', null, 'B')),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.italic ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ italic: !curStyle.italic }); } }, h('em', null, 'I')),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.underline ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ underline: !curStyle.underline }); } }, h('u', null, 'U')),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.strike ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ strike: !curStyle.strike }); } }, h('s', null, 'S')),
-                        h('select', { className: 'dsh-xl-rselect', style: { width: '74px' }, disabled: !sheet, value: '', onChange: function (e) { if (e.target.value) applyFormatToSelection({ border_preset: e.target.value }); } },
-                          h('option', { value: '' }, 'Borders'), h('option', { value: 'all' }, 'All Borders'), h('option', { value: 'bottom' }, 'Bottom'), h('option', { value: 'top_bottom' }, 'Top & Double'), h('option', { value: 'none' }, 'No Border')
-                        ),
-                        h('input', { type: 'color', className: 'dsh-xl-colorpick', title: 'Fill Color', disabled: !sheet, value: curStyle.fill_color || curStyle.fill || '#fff2cc', onChange: function (e) { applyFormatToSelection({ fill_color: e.target.value }); } }),
-                        h('input', { type: 'color', className: 'dsh-xl-colorpick', title: 'Font Color', disabled: !sheet, value: curStyle.font_color || curStyle.color || '#000000', onChange: function (e) { applyFormatToSelection({ font_color: e.target.value }); } })
-                      ),
-                    ]),
-                    ribbonGroup('Alignment', [
-                      h('div', { key: 'a1', className: 'dsh-xl-rgroup-row' },
-                        ['top', 'middle', 'bottom'].map(function (va) { return h('button', { key: va, type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.valign === va ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ valign: va }); } }, va === 'top' ? '⤒' : va === 'middle' ? '⇳' : '⤓'); }),
-                        h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.wrap ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ wrap: !curStyle.wrap }); } }, 'Wrap')
-                      ),
-                      h('div', { key: 'a2', className: 'dsh-xl-rgroup-row' },
-                        ['left', 'center', 'right'].map(function (ha) { return h('button', { key: ha, type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.align === ha ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ align: ha }); } }, ha === 'left' ? '≡L' : ha === 'center' ? '≡C' : '≡R'); }),
-                        h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Merge & Center selected range', onClick: function () { var r = formatRangeLabel(selStart, selEnd); if (r.indexOf(':') !== -1) { setPendingMerges(function (m) { return m.concat([r]); }); applyFormatToSelection({ align: 'center' }); setNotice('Queued merge for ' + r + ' (click Save).'); } } }, 'Merge')
-                      ),
-                    ]),
-                    ribbonGroup('Number', [
-                      h('div', { key: 'n1', className: 'dsh-xl-rgroup-row' },
-                        h('select', { className: 'dsh-xl-rselect', style: { width: '108px' }, disabled: !sheet, value: curStyle.numberFormat || curStyle.number_format || 'General', onChange: function (e) { applyFormatToSelection({ number_format: e.target.value }); } },
-                          h('option', { value: 'General' }, 'General'), h('option', { value: '#,##0' }, 'Number'), h('option', { value: '#,##0.00' }, 'Number (0.00)'), h('option', { value: '$#,##0.00' }, 'Currency'), h('option', { value: '0.0%' }, 'Percentage'), h('option', { value: 'yyyy-mm-dd' }, 'Short Date'), h('option', { value: '@' }, 'Text')
-                        )
-                      ),
-                      h('div', { key: 'n2', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ number_format: '$#,##0.00' }); } }, '$'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ number_format: '0.0%' }); } }, '%'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ number_format: '#,##0' }); } }, ','),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Increase Decimal', onClick: function () { handleAdjustDecimals(1); } }, '.0→'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Decrease Decimal', onClick: function () { handleAdjustDecimals(-1); } }, '←.0')
-                      ),
-                    ]),
-                    ribbonGroup('Styles', [
-                      h('div', { key: 's1', className: 'dsh-xl-rgroup-row' },
-                        h('select', { className: 'dsh-xl-rselect', style: { width: '112px' }, disabled: !sheet, value: '', onChange: function (e) {
-                          var v = e.target.value;
-                          if (v === 'gt') { var t = window.prompt('Highlight numeric cells greater than:', '100'); if (t !== null && !isNaN(Number(t))) setCondRule({ type: 'gt', value: Number(t) }); }
-                          else if (v === 'lt') { var t2 = window.prompt('Highlight numeric cells less than:', '0'); if (t2 !== null && !isNaN(Number(t2))) setCondRule({ type: 'lt', value: Number(t2) }); }
-                          else if (v === 'clear') setCondRule(null);
-                        } },
-                          h('option', { value: '' }, 'Cond. Format'), h('option', { value: 'gt' }, 'Highlight > Value'), h('option', { value: 'lt' }, 'Highlight < Value'), h('option', { value: 'clear' }, 'Clear Rules')
-                        )
-                      ),
-                      h('div', { key: 's2', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, style: { background: '#c6efce', color: '#006100' }, onClick: function () { applyFormatToSelection({ fill_color: '#C6EFCE', font_color: '#006100' }); } }, 'Good'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, style: { background: '#ffc7ce', color: '#9c0006' }, onClick: function () { applyFormatToSelection({ fill_color: '#FFC7CE', font_color: '#9C0006' }); } }, 'Bad'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, style: { background: '#ffeb9c', color: '#9c6500' }, onClick: function () { applyFormatToSelection({ fill_color: '#FFEB9C', font_color: '#9C6500' }); } }, 'Neutral')
-                      ),
-                    ]),
-                    ribbonGroup('Cells', [
-                      h('div', { key: 'c1', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { runSheetOp('insert_rows', { index: selStart.row, amount: 1 }); } }, '+ Row'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { runSheetOp('insert_columns', { index: selStart.col, amount: 1 }); } }, '+ Col')
-                      ),
-                      h('div', { key: 'c2', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { if (window.confirm('Delete row ' + selStart.row + '?')) runSheetOp('delete_rows', { index: selStart.row, amount: 1 }); } }, '− Row'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { if (window.confirm('Delete column ' + colIndexToLetter(selStart.col) + '?')) runSheetOp('delete_columns', { index: selStart.col, amount: 1 }); } }, '− Col')
-                      ),
-                    ]),
-                    ribbonGroup('Editing', [
-                      h('div', { key: 'e1', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleInsertFormula('SUM'); } }, 'Σ AutoSum'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleFillDirection('down'); } }, '↓ Fill'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { setFindOpen(true); } }, '🔍 Find')
-                      ),
-                      h('div', { key: 'e2', className: 'dsh-xl-rgroup-row' },
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleClearSelection('contents'); } }, 'Clear Text'),
-                        h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleClearSelection('all'); } }, 'Clear All')
-                      ),
-                    ]),
-                  ]
-                : ribbonTab === 'Insert'
-                ? [
-                    ribbonGroup('Tables', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
-                        pushUndoSnapshot();
-                        setPendingFormats(function (cur) {
-                          var next = Object.assign({}, cur);
-                          for (var r = selNorm.r1; r <= selNorm.r2; r++) {
-                            for (var c = selNorm.c1; c <= selNorm.c2; c++) {
-                              var co = makeCoord(r, c);
-                              if (r === selNorm.r1) next[co] = { bold: true, fill_color: '#1F4E79', font_color: '#FFFFFF', border_preset: 'all' };
-                              else next[co] = { fill_color: (r - selNorm.r1) % 2 === 1 ? '#F2F6FC' : '#FFFFFF', border_preset: 'all' };
+            // 3. Full Excel Grouped Ribbon (hidden in Focus Mode)
+            !focusMode
+              ? h(
+                  'div', { className: 'dsh-xl-ribbon' },
+                  ribbonTab === 'Home'
+                    ? [
+                        ribbonGroup('Clipboard', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handlePaste('all'); } }, '📋 Paste'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Paste evaluated values only', onClick: function () { handlePaste('values'); } }, '123 Values'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Paste formatting only', onClick: function () { handlePaste('formats'); } }, '🎨 Fmt')
+                          ),
+                          h('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleCopy(true); } }, '✂ Cut'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleCopy(false); } }, '⧉ Copy'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (painterActive ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { formatPainterRef.current = getCellStyle(activeCoord); setPainterActive(true); setNotice('Format Painter active: click a cell to apply style.'); } }, '🖌 Paint')
+                          )
+                        )),
+                        ribbonGroup('Font', [
+                          h('div', { key: 'f1', className: 'dsh-xl-rgroup-row' },
+                            h('select', { className: 'dsh-xl-rselect', style: { width: '100px' }, disabled: !sheet, value: curStyle.fontFamily || curStyle.font_family || 'Calibri', onChange: function (e) { applyFormatToSelection({ font_family: e.target.value }); } },
+                              ['Calibri', 'Arial', 'Segoe UI', 'Times New Roman', 'Consolas', 'Verdana', 'Georgia'].map(function (f) { return h('option', { key: f, value: f }, f); })
+                            ),
+                            h('select', { className: 'dsh-xl-rselect', style: { width: '46px' }, disabled: !sheet, value: String(curStyle.fontSize || curStyle.font_size || 11), onChange: function (e) { applyFormatToSelection({ font_size: Number(e.target.value) }); } },
+                              [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36].map(function (sz) { return h('option', { key: sz, value: String(sz) }, String(sz)); })
+                            ),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Increase Font Size', onClick: function () { applyFormatToSelection({ font_size: Math.min(36, (curStyle.fontSize || curStyle.font_size || 11) + 2) }); } }, 'A▲'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Decrease Font Size', onClick: function () { applyFormatToSelection({ font_size: Math.max(8, (curStyle.fontSize || curStyle.font_size || 11) - 2) }); } }, 'A▼')
+                          ),
+                          h('div', { key: 'f2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.bold ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ bold: !curStyle.bold }); } }, h('strong', null, 'B')),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.italic ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ italic: !curStyle.italic }); } }, h('em', null, 'I')),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.underline ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ underline: !curStyle.underline }); } }, h('u', null, 'U')),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (curStyle.strike ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { applyFormatToSelection({ strike: !curStyle.strike }); } }, h('s', null, 'S')),
+                            h('select', { className: 'dsh-xl-rselect', style: { width: '74px' }, disabled: !sheet, value: '', onChange: function (e) { if (e.target.value) applyFormatToSelection({ border_preset: e.target.value }); } },
+                              h('option', { value: '' }, 'Borders'), h('option', { value: 'all' }, 'All Borders'), h('option', { value: 'bottom' }, 'Bottom'), h('option', { value: 'top_bottom' }, 'Top & Double'), h('option', { value: 'none' }, 'No Border')
+                            ),
+                            h('input', { type: 'color', className: 'dsh-xl-colorpick', title: 'Fill Color', disabled: !sheet, value: curStyle.fill_color || curStyle.fill || '#fff2cc', onChange: function (e) { applyFormatToSelection({ fill_color: e.target.value }); } }),
+                            h('input', { type: 'color', className: 'dsh-xl-colorpick', title: 'Font Color', disabled: !sheet, value: curStyle.font_color || curStyle.color || '#000000', onChange: function (e) { applyFormatToSelection({ font_color: e.target.value }); } })
+                          ),
+                        ]),
+                        ribbonGroup('Alignment', [
+                          h('div', { key: 'a1', className: 'dsh-xl-rgroup-row' },
+                            ['top', 'middle', 'bottom'].map(function (va) { return h('button', { key: va, type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.valign === va ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ valign: va }); } }, va === 'top' ? '⤒' : va === 'middle' ? '⇳' : '⤓'); }),
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.wrap ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ wrap: !curStyle.wrap }); } }, 'Wrap'),
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Decrease Indent', onClick: function () { applyFormatToSelection({ indent: Math.max(0, (curStyle.indent || 0) - 1) }); } }, '⇤'),
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Increase Indent', onClick: function () { applyFormatToSelection({ indent: Math.min(8, (curStyle.indent || 0) + 1) }); } }, '⇥')
+                          ),
+                          h('div', { key: 'a2', className: 'dsh-xl-rgroup-row' },
+                            ['left', 'center', 'right'].map(function (ha) { return h('button', { key: ha, type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn ' + (curStyle.align === ha ? 'dsh-xl-rbtn-active' : ''), onClick: function () { applyFormatToSelection({ align: ha }); } }, ha === 'left' ? '≡L' : ha === 'center' ? '≡C' : '≡R'); }),
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Merge & Center selected range', onClick: function () { var r = formatRangeLabel(selStart, selEnd); if (r.indexOf(':') !== -1) { setPendingMerges(function (m) { return m.concat([r]); }); applyFormatToSelection({ align: 'center' }); setNotice('Queued merge for ' + r + ' (click Save).'); } } }, 'Merge'),
+                            h('button', { type: 'button', disabled: !sheet, className: 'dsh-xl-rbtn', title: 'Unmerge queued range', onClick: function () { var r = formatRangeLabel(selStart, selEnd); setPendingMerges(function (m) { return m.filter(function (x) { return x !== r; }); }); setNotice('Removed merge for ' + r); } }, 'Unmerge')
+                          ),
+                        ]),
+                        ribbonGroup('Number', [
+                          h('div', { key: 'n1', className: 'dsh-xl-rgroup-row' },
+                            h('select', { className: 'dsh-xl-rselect', style: { width: '112px' }, disabled: !sheet, value: curStyle.numberFormat || curStyle.number_format || 'General', onChange: function (e) { applyFormatToSelection({ number_format: e.target.value }); } },
+                              h('option', { value: 'General' }, 'General'), h('option', { value: '#,##0' }, 'Number'), h('option', { value: '#,##0.00' }, 'Number (0.00)'), h('option', { value: '$#,##0.00' }, 'Currency'), h('option', { value: '0.0%' }, 'Percentage'), h('option', { value: '0.00E+00' }, 'Scientific'), h('option', { value: 'yyyy-mm-dd' }, 'Short Date'), h('option', { value: 'hh:mm:ss' }, 'Time'), h('option', { value: '@' }, 'Text')
+                            )
+                          ),
+                          h('div', { key: 'n2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ number_format: '$#,##0.00' }); } }, '$'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ number_format: '0.0%' }); } }, '%'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ number_format: '#,##0' }); } }, ','),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Increase Decimal', onClick: function () { handleAdjustDecimals(1); } }, '.0→'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, title: 'Decrease Decimal', onClick: function () { handleAdjustDecimals(-1); } }, '←.0')
+                          ),
+                        ]),
+                        ribbonGroup('Styles', [
+                          h('div', { key: 's1', className: 'dsh-xl-rgroup-row' },
+                            h('select', { className: 'dsh-xl-rselect', style: { width: '116px' }, disabled: !sheet, value: '', onChange: function (e) {
+                              var v = e.target.value;
+                              if (v === 'gt') { var t = window.prompt('Highlight numeric cells greater than:', '100'); if (t !== null && !isNaN(Number(t))) setCondRule({ type: 'gt', value: Number(t) }); }
+                              else if (v === 'lt') { var t2 = window.prompt('Highlight numeric cells less than:', '0'); if (t2 !== null && !isNaN(Number(t2))) setCondRule({ type: 'lt', value: Number(t2) }); }
+                              else if (v === 'eq') { var t3 = window.prompt('Highlight cells equal to:', ''); if (t3 !== null) setCondRule({ type: 'eq', value: t3 }); }
+                              else if (v === 'contains') { var t4 = window.prompt('Highlight cells containing text:', ''); if (t4 !== null && t4 !== '') setCondRule({ type: 'contains', value: t4.toLowerCase() }); }
+                              else if (v === 'dup') setCondRule({ type: 'dup' });
+                              else if (v === 'scale') setCondRule({ type: 'scale' });
+                              else if (v === 'clear') setCondRule(null);
+                            } },
+                              h('option', { value: '' }, 'Cond. Format'), h('option', { value: 'gt' }, 'Highlight > Value'), h('option', { value: 'lt' }, 'Highlight < Value'), h('option', { value: 'eq' }, 'Highlight = Value'), h('option', { value: 'contains' }, 'Text Contains...'), h('option', { value: 'dup' }, 'Duplicate Values'), h('option', { value: 'scale' }, 'Color Scale (RYG)'), h('option', { value: 'clear' }, 'Clear Rules')
+                            ),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ bold: true, font_size: 14, border_preset: 'bottom', font_color: activeTheme.headerBg }); } }, 'Heading')
+                          ),
+                          h('div', { key: 's2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, style: { background: '#c6efce', color: '#006100' }, onClick: function () { applyFormatToSelection({ fill_color: '#C6EFCE', font_color: '#006100' }); } }, 'Good'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, style: { background: '#ffc7ce', color: '#9c0006' }, onClick: function () { applyFormatToSelection({ fill_color: '#FFC7CE', font_color: '#9C0006' }); } }, 'Bad'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, style: { background: '#ffeb9c', color: '#9c6500' }, onClick: function () { applyFormatToSelection({ fill_color: '#FFEB9C', font_color: '#9C6500' }); } }, 'Neutral'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { applyFormatToSelection({ bold: true, border_preset: 'top_bottom' }); } }, 'Total')
+                          ),
+                        ]),
+                        ribbonGroup('Cells', [
+                          h('div', { key: 'c1', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { runSheetOp('insert_rows', { index: selStart.row, amount: 1 }); } }, '+ Row'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { runSheetOp('insert_columns', { index: selStart.col, amount: 1 }); } }, '+ Col'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { var hVal = window.prompt('Row ' + selStart.row + ' height (px):', String(rowHeights[selStart.row] || 24)); if (hVal && Number(hVal) >= 16) setRowHeights(function (m) { var n = Object.assign({}, m); n[selStart.row] = Number(hVal); return n; }); } }, 'Row Ht')
+                          ),
+                          h('div', { key: 'c2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { if (window.confirm('Delete row ' + selStart.row + '?')) runSheetOp('delete_rows', { index: selStart.row, amount: 1 }); } }, '− Row'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet || saving, onClick: function () { if (window.confirm('Delete column ' + colIndexToLetter(selStart.col) + '?')) runSheetOp('delete_columns', { index: selStart.col, amount: 1 }); } }, '− Col'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleAutoFitCol }, 'AutoFit')
+                          ),
+                        ]),
+                        ribbonGroup('Editing', [
+                          h('div', { key: 'e1', className: 'dsh-xl-rgroup-row' },
+                            h('select', { className: 'dsh-xl-rselect', style: { width: '82px' }, disabled: !sheet, value: '', onChange: function (e) { if (e.target.value) handleInsertFormula(e.target.value); } },
+                              h('option', { value: '' }, 'Σ AutoSum'), h('option', { value: 'SUM' }, 'Sum'), h('option', { value: 'AVERAGE' }, 'Average'), h('option', { value: 'COUNT' }, 'Count'), h('option', { value: 'MAX' }, 'Max'), h('option', { value: 'MIN' }, 'Min')
+                            ),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleFillDirection('down'); } }, '↓ Down'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleFillDirection('series'); } }, '1,2,3'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { setFindOpen(true); } }, '🔍 Find')
+                          ),
+                          h('div', { key: 'e2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleClearSelection('contents'); } }, 'Clear Text'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleClearSelection('formats'); } }, 'Clear Fmt'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleClearSelection('all'); } }, 'Clear All'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { var g = window.prompt('Go To cell reference (e.g. D25):', activeCoord); if (g) { var p = parseCoord(g); if (p) selectCell(p.row, p.col, false, false); } } }, 'Go To')
+                          ),
+                        ]),
+                      ]
+                    : ribbonTab === 'Insert'
+                    ? [
+                        ribbonGroup('Tables', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setPivotOpen(true); } }, h('span', null, '⊞'), h('span', null, 'PivotTable')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
+                            pushUndoSnapshot();
+                            setPendingFormats(function (cur) {
+                              var next = Object.assign({}, cur);
+                              for (var r = selNorm.r1; r <= selNorm.r2; r++) {
+                                for (var c = selNorm.c1; c <= selNorm.c2; c++) {
+                                  var co = makeCoord(r, c);
+                                  if (r === selNorm.r1) next[co] = { bold: true, fill_color: activeTheme.headerBg, font_color: '#FFFFFF', border_preset: 'all' };
+                                  else next[co] = { fill_color: (r - selNorm.r1) % 2 === 1 ? activeTheme.stripeBg : '#FFFFFF', border_preset: 'all' };
+                                }
+                              }
+                              return next;
+                            });
+                          } }, h('span', null, '▦'), h('span', null, 'Format Table'))
+                        )),
+                        ribbonGroup('Cells & Sheets', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { runSheetOp('insert_rows', { index: selStart.row, amount: 1 }); } }, h('span', null, '➕'), h('span', null, 'Row')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { runSheetOp('insert_columns', { index: selStart.col, amount: 1 }); } }, h('span', null, '➕'), h('span', null, 'Column')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || workbookProtected, onClick: function () { var nm = window.prompt('New worksheet name:', 'Sheet' + ((sheet.sheets || []).length + 1)); if (nm && nm.trim()) runSheetOp('create_sheet', { new_name: nm.trim() }); } }, h('span', null, '📑'), h('span', null, 'Sheet'))
+                        )),
+                        ribbonGroup('Charts', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('column'); } }, h('span', null, '📊'), h('span', null, 'Column')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('bar'); } }, h('span', null, '▤'), h('span', null, 'Bar')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('line'); } }, h('span', null, '📈'), h('span', null, 'Line')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('pie'); } }, h('span', null, '◔'), h('span', null, 'Pie')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('scatter'); } }, h('span', null, '⁘'), h('span', null, 'Scatter'))
+                        )),
+                        ribbonGroup('Links', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
+                            var url = window.prompt('Enter URL for ' + activeCoord + ':', hyperlinks[activeCoord] || 'https://');
+                            if (url && url.trim()) {
+                              setHyperlinks(function (m) { var n = Object.assign({}, m); n[activeCoord] = url.trim(); return n; });
+                              if (!getCellRaw(activeCoord)) { var u = {}; u[activeCoord] = url.trim(); setCellValuesBatch(u); }
+                              applyFormatToSelection({ font_color: '#0563C1', underline: true });
                             }
-                          }
-                          return next;
-                        });
-                      } }, h('span', null, '▦'), h('span', null, 'Format Table')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { runSheetOp('insert_rows', { index: selStart.row, amount: 1 }); } }, h('span', null, '➕'), h('span', null, 'Row')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { runSheetOp('insert_columns', { index: selStart.col, amount: 1 }); } }, h('span', null, '➕'), h('span', null, 'Column'))
-                    )),
-                    ribbonGroup('Charts', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('bar'); } }, h('span', null, '📊'), h('span', null, 'Bar Chart')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleBuildChart('line'); } }, h('span', null, '📈'), h('span', null, 'Line Chart'))
-                    )),
-                    ribbonGroup('Notes', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
-                        var t = window.prompt('Cell note for ' + activeCoord + ':', pendingNotes[activeCoord] || '');
-                        if (t !== null) setPendingNotes(function (n) { var nx = Object.assign({}, n); nx[activeCoord] = t; return nx; });
-                      } }, h('span', null, '💬'), h('span', null, 'Add Note'))
-                    )),
-                  ]
-                : ribbonTab === 'Page Layout'
-                ? [
-                    ribbonGroup('Page Setup', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { window.print(); } }, h('span', null, '🖨'), h('span', null, 'Print / PDF')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: handleExportCsv }, h('span', null, '📤'), h('span', null, 'Export CSV'))
-                    )),
-                    ribbonGroup('Sheet Options', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showGridlines ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowGridlines(function (v) { return !v; }); } }, '☑ Gridlines'),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showHeadings ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowHeadings(function (v) { return !v; }); } }, '☑ Headings')
-                    )),
-                  ]
-                : ribbonTab === 'Formulas'
-                ? [
-                    ribbonGroup('Function Library', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall dsh-xl-rbtn-active', disabled: !sheet, onClick: function () { setFxCategory('All'); setFxModalOpen(true); } }, h('span', { style: { fontWeight: 700, fontStyle: 'italic', fontFamily: 'Georgia, serif' } }, 'fx'), h('span', null, 'Insert Function')),
-                      ['Math & Trig', 'Statistical', 'Logical', 'Lookup & Reference', 'Text', 'Date & Time', 'Financial', 'Information'].map(function (cat) {
-                        return h('button', {
-                          key: cat, type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet,
-                          onClick: function () { setFxCategory(cat); setFxSearch(''); setFxModalOpen(true); },
-                        }, h('span', { style: { color: '#107c41', fontWeight: 700 } }, 'fx'), h('span', null, cat.split(' ')[0]));
-                      })
-                    )),
-                    ribbonGroup('Formula Auditing', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (showFormulas ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setShowFormulas(function (v) { return !v; }); } }, h('span', null, 'fx'), h('span', null, 'Show Formulas'))
-                    )),
-                  ]
-                : ribbonTab === 'Data'
-                ? [
-                    ribbonGroup('Sort & Filter', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || saving, onClick: function () { runSheetOp('sort_column', { index: selStart.col, ascending: true }); } }, h('span', null, 'A↓Z'), h('span', null, 'Sort A→Z')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || saving, onClick: function () { runSheetOp('sort_column', { index: selStart.col, ascending: false }); } }, h('span', null, 'Z↓A'), h('span', null, 'Sort Z→A')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (autoFilterOn ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setAutoFilterOn(function (v) { return !v; }); setFilterQuery(''); } }, h('span', null, '⧨'), h('span', null, 'Filter'))
-                    )),
-                    ribbonGroup('Data Tools', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: handleTextToColumns }, h('span', null, '⫼'), h('span', null, 'Text to Cols')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: handleRemoveDuplicates }, h('span', null, '🧹'), h('span', null, 'Remove Dups')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (summary ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { if (summary) setSummary(null); else handleSummary(); } }, h('span', null, '📊'), h('span', null, 'Summary'))
-                    )),
-                  ]
-                : ribbonTab === 'Review'
-                ? [
-                    ribbonGroup('Notes', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
-                        var t = window.prompt('Note for ' + activeCoord + ':', pendingNotes[activeCoord] || '');
-                        if (t !== null) setPendingNotes(function (n) { var nx = Object.assign({}, n); nx[activeCoord] = t; return nx; });
-                      } }, h('span', null, '💬'), h('span', null, 'New Note')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setPendingNotes(function (n) { var nx = Object.assign({}, n); nx[activeCoord] = ''; return nx; }); } }, h('span', null, '🗑'), h('span', null, 'Delete Note'))
-                    )),
-                    ribbonGroup('Protect', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (sheetProtected ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setSheetProtected(function (v) { return !v; }); } }, h('span', null, sheetProtected ? '🔓' : '🔒'), h('span', null, sheetProtected ? 'Unprotect' : 'Protect Sheet'))
-                    )),
-                  ]
-                : [
-                    ribbonGroup('Show', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showGridlines ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowGridlines(function (v) { return !v; }); } }, '☑ Gridlines'),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showFormulaBar ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowFormulaBar(function (v) { return !v; }); } }, '☑ Formula Bar'),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showHeadings ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowHeadings(function (v) { return !v; }); } }, '☑ Headings')
-                    )),
-                    ribbonGroup('Freeze Panes', h('div', { className: 'dsh-xl-rgroup-row' },
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeTopRow ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeTopRow(function (v) { return !v; }); } }, h('span', null, '❄'), h('span', null, 'Top Row')),
-                      h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeFirstCol ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeFirstCol(function (v) { return !v; }); } }, h('span', null, '❄'), h('span', null, 'First Col'))
-                    )),
-                    ribbonGroup('Zoom', h('div', { className: 'dsh-xl-rgroup-row' },
-                      [75, 100, 125, 150].map(function (z) { return h('button', { key: z, type: 'button', className: 'dsh-xl-rbtn ' + (zoom === z ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setZoom(z); } }, z + '%'); })
-                    )),
-                  ]
-            ),
+                          } }, h('span', null, '🔗'), h('span', null, 'Link')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || !hyperlinks[activeCoord], onClick: function () {
+                            setHyperlinks(function (m) { var n = Object.assign({}, m); delete n[activeCoord]; return n; });
+                            applyFormatToSelection({ font_color: '', underline: false });
+                          } }, h('span', null, '⛓‍💥'), h('span', null, 'Unlink'))
+                        )),
+                        ribbonGroup('Text & Symbols', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleInsertFormula('TODAY'); } }, h('span', null, '📅'), h('span', null, 'Today')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleInsertFormula('NOW'); } }, h('span', null, '🕒'), h('span', null, 'Now')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setSymbolOpen(true); } }, h('span', null, 'Ω'), h('span', null, 'Symbol')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
+                            var t = window.prompt('Cell note for ' + activeCoord + ':', pendingNotes[activeCoord] || '');
+                            if (t !== null) setPendingNotes(function (n) { var nx = Object.assign({}, n); nx[activeCoord] = t; return nx; });
+                          } }, h('span', null, '💬'), h('span', null, 'Note'))
+                        )),
+                      ]
+                    : ribbonTab === 'Page Layout'
+                    ? [
+                        ribbonGroup('Themes', h('div', { className: 'dsh-xl-rgroup-row' },
+                          Object.keys(EXCEL_THEMES).map(function (tk) {
+                            return h('button', {
+                              key: tk, type: 'button',
+                              className: 'dsh-xl-rbtn ' + (themeKey === tk ? 'dsh-xl-rbtn-active' : ''),
+                              onClick: function () { setThemeKey(tk); setNotice('Applied "' + EXCEL_THEMES[tk].label + '" theme.'); },
+                            }, h('span', { style: { width: '10px', height: '10px', borderRadius: '2px', background: EXCEL_THEMES[tk].primary, display: 'inline-block' } }), EXCEL_THEMES[tk].label.split(' ')[0]);
+                          })
+                        )),
+                        ribbonGroup('Page Setup', [
+                          h('div', { key: 'ps1', className: 'dsh-xl-rgroup-row' },
+                            h('select', { className: 'dsh-xl-rselect', value: printCfg.margin, onChange: function (e) { setPrintCfg(function (p) { return Object.assign({}, p, { margin: e.target.value }); }); } },
+                              h('option', { value: 'normal' }, 'Margins: Normal'), h('option', { value: 'narrow' }, 'Margins: Narrow'), h('option', { value: 'wide' }, 'Margins: Wide')
+                            ),
+                            h('select', { className: 'dsh-xl-rselect', value: printCfg.orientation, onChange: function (e) { setPrintCfg(function (p) { return Object.assign({}, p, { orientation: e.target.value }); }); } },
+                              h('option', { value: 'portrait' }, 'Portrait'), h('option', { value: 'landscape' }, 'Landscape')
+                            ),
+                            h('select', { className: 'dsh-xl-rselect', value: printCfg.paper, onChange: function (e) { setPrintCfg(function (p) { return Object.assign({}, p, { paper: e.target.value }); }); } },
+                              h('option', { value: 'Letter' }, 'Letter'), h('option', { value: 'A4' }, 'A4'), h('option', { value: 'Legal' }, 'Legal')
+                            )
+                          ),
+                          h('div', { key: 'ps2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { var r = formatRangeLabel(selStart, selEnd); setPrintCfg(function (p) { return Object.assign({}, p, { printArea: r }); }); setNotice('Print Area set to ' + r); } }, 'Set Print Area'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !printCfg.printArea, onClick: function () { setPrintCfg(function (p) { return Object.assign({}, p, { printArea: '' }); }); } }, 'Clear Area'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-active', disabled: !sheet, onClick: function () { window.print(); } }, '🖨 Print / PDF')
+                          ),
+                        ]),
+                        ribbonGroup('Scale to Fit', h('div', { className: 'dsh-xl-rgroup-row' },
+                          [100, 85, 75, 50].map(function (sc) {
+                            return h('button', { key: sc, type: 'button', className: 'dsh-xl-rbtn ' + (printCfg.scale === sc ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setPrintCfg(function (p) { return Object.assign({}, p, { scale: sc }); }); setZoom(sc); } }, sc + '%');
+                          })
+                        )),
+                        ribbonGroup('Sheet Options', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showGridlines ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowGridlines(function (v) { return !v; }); } }, '☑ Gridlines'),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showHeadings ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowHeadings(function (v) { return !v; }); } }, '☑ Headings'),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (sheetRtl ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setSheetRtl(function (v) { return !v; }); } }, '⇄ RTL')
+                        )),
+                      ]
+                    : ribbonTab === 'Formulas'
+                    ? [
+                        ribbonGroup('Function Library', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall dsh-xl-rbtn-active', disabled: !sheet, onClick: function () { setFxCategory('All'); setFxModalOpen(true); } }, h('span', { style: { fontWeight: 700, fontStyle: 'italic', fontFamily: 'Georgia, serif' } }, 'fx'), h('span', null, 'Insert Fx')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleInsertFormula('SUM'); } }, h('span', null, 'Σ'), h('span', null, 'AutoSum')),
+                          ['Math & Trig', 'Statistical', 'Logical', 'Lookup & Reference', 'Text', 'Date & Time', 'Financial', 'Information'].map(function (cat) {
+                            return h('button', {
+                              key: cat, type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet,
+                              onClick: function () { setFxCategory(cat); setFxSearch(''); setFxModalOpen(true); },
+                            }, h('span', { style: { color: activeTheme.primary, fontWeight: 700 } }, 'fx'), h('span', null, cat.split(' ')[0]));
+                          })
+                        )),
+                        ribbonGroup('Defined Names', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setNewDefRef(formatRangeLabel(selStart, selEnd)); setNameMgrOpen(true); } }, h('span', null, '🏷'), h('span', null, 'Name Mgr'))
+                        )),
+                        ribbonGroup('Formula Auditing', [
+                          h('div', { key: 'fa1', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleTracePrecedents }, '↗ Precedents'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleTraceDependents }, '↘ Dependents'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !Object.keys(precedentMap).length && !Object.keys(dependentMap).length, onClick: function () { setPrecedentMap({}); setDependentMap({}); } }, 'Clear Arrows')
+                          ),
+                          h('div', { key: 'fa2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showFormulas ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setShowFormulas(function (v) { return !v; }); } }, 'Show Formulas'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleErrorCheck }, '⚠ Error Check'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { var raw = getCellRaw(activeCoord); setNotice('Evaluate ' + activeCoord + ': ' + (raw || '(empty)') + '  ⇒  ' + getCellDisplay(activeCoord)); } }, 'Evaluate')
+                          ),
+                        ]),
+                        ribbonGroup('Calculation', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setCalcTick(function (t) { return t + 1; }); setNotice('Recalculated all formulas.'); } }, h('span', null, '🧮'), h('span', null, 'Calc Now')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (calcMode === 'manual' ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setCalcMode(function (m) { return m === 'auto' ? 'manual' : 'auto'; }); } }, h('span', null, '⚙'), h('span', null, calcMode === 'auto' ? 'Auto' : 'Manual'))
+                        )),
+                      ]
+                    : ribbonTab === 'Data'
+                    ? [
+                        ribbonGroup('Get & Transform', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { if (fileInputRef.current) fileInputRef.current.click(); } }, h('span', null, '📥'), h('span', null, 'From CSV/JSON')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { if (sheet) openWorkbook(sheet.file_path, sheet.active_sheet); } }, h('span', null, '↻'), h('span', null, 'Refresh All'))
+                        )),
+                        ribbonGroup('Sort & Filter', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || saving, onClick: function () { runSheetOp('sort_column', { index: selStart.col, ascending: true }); } }, h('span', null, 'A↓Z'), h('span', null, 'Sort A→Z')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet || saving, onClick: function () { runSheetOp('sort_column', { index: selStart.col, ascending: false }); } }, h('span', null, 'Z↓A'), h('span', null, 'Sort Z→A')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setSortCfg({ col: selStart.col, asc: true }); setCustomSortOpen(true); } }, h('span', null, '⇅'), h('span', null, 'Custom Sort')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (autoFilterOn ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setAutoFilterOn(function (v) { return !v; }); setFilterQuery(''); } }, h('span', null, '⧨'), h('span', null, 'Filter'))
+                        )),
+                        ribbonGroup('Data Tools', [
+                          h('div', { key: 'dt1', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleTextToColumns }, '⫼ Text to Cols'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleFlashFill }, '⚡ Flash Fill'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleRemoveDuplicates }, '🧹 Remove Dups')
+                          ),
+                          h('div', { key: 'dt2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { setValModalOpen(true); } }, '✔ Validation'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: handleTranspose }, '⇄ Transpose'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (summary ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { if (summary) setSummary(null); else handleSummary(); } }, '📊 Summary')
+                          ),
+                        ]),
+                        ribbonGroup('Forecast', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setGoalCfg(function (g) { return Object.assign({}, g, { targetCell: activeCoord }); }); setGoalSeekOpen(true); } }, h('span', null, '🎯'), h('span', null, 'Goal Seek'))
+                        )),
+                        ribbonGroup('Outline', [
+                          h('div', { key: 'o1', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { setHiddenRows(function (m) { var n = Object.assign({}, m); for (var r = selNorm.r1; r <= selNorm.r2; r++) n[r] = true; return n; }); } }, 'Hide Rows'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !Object.keys(hiddenRows).length, onClick: function () { setHiddenRows({}); } }, 'Unhide Rows')
+                          ),
+                          h('div', { key: 'o2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { setHiddenCols(function (m) { var n = Object.assign({}, m); for (var c = selNorm.c1; c <= selNorm.c2; c++) n[c] = true; return n; }); } }, 'Hide Cols'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !Object.keys(hiddenCols).length, onClick: function () { setHiddenCols({}); } }, 'Unhide Cols')
+                          ),
+                        ]),
+                      ]
+                    : ribbonTab === 'Review'
+                    ? [
+                        ribbonGroup('Proofing & Text', [
+                          h('div', { key: 'pr1', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleTransformText('trim'); } }, 'Trim Spaces'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleTransformText('proper'); } }, 'Title Case')
+                          ),
+                          h('div', { key: 'pr2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleTransformText('upper'); } }, 'UPPER'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { handleTransformText('lower'); } }, 'lower'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: !sheet, onClick: function () { setStatsOpen(true); } }, '📊 Stats')
+                          ),
+                        ]),
+                        ribbonGroup('Notes', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () {
+                            var t = window.prompt('Note for ' + activeCoord + ':', pendingNotes[activeCoord] || '');
+                            if (t !== null) setPendingNotes(function (n) { var nx = Object.assign({}, n); nx[activeCoord] = t; return nx; });
+                          } }, h('span', null, '💬'), h('span', null, 'New Note')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { setPendingNotes(function (n) { var nx = Object.assign({}, n); nx[activeCoord] = ''; return nx; }); } }, h('span', null, '🗑'), h('span', null, 'Delete')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleJumpNote(-1); } }, h('span', null, '◀'), h('span', null, 'Prev')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !sheet, onClick: function () { handleJumpNote(1); } }, h('span', null, '▶'), h('span', null, 'Next')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (showAllNotes ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setShowAllNotes(function (v) { return !v; }); } }, h('span', null, '👁'), h('span', null, 'Show All'))
+                        )),
+                        ribbonGroup('Protect', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (sheetProtected ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setSheetProtected(function (v) { return !v; }); } }, h('span', null, sheetProtected ? '🔓' : '🔒'), h('span', null, sheetProtected ? 'Unprotect Sheet' : 'Protect Sheet')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (workbookProtected ? 'dsh-xl-rbtn-active' : ''), disabled: !sheet, onClick: function () { setWorkbookProtected(function (v) { return !v; }); } }, h('span', null, workbookProtected ? '🔓' : '🔐'), h('span', null, workbookProtected ? 'Unlock WB' : 'Protect WB'))
+                        )),
+                      ]
+                    : [
+                        ribbonGroup('Workbook Views', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (!pageBreakView ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setPageBreakView(false); } }, h('span', null, '▦'), h('span', null, 'Normal')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (pageBreakView ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setPageBreakView(true); } }, h('span', null, '📄'), h('span', null, 'Page Break')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', onClick: function () { setFocusMode(true); } }, h('span', null, '⤢'), h('span', null, 'Focus Mode'))
+                        )),
+                        ribbonGroup('Show', [
+                          h('div', { key: 'sh1', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showGridlines ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowGridlines(function (v) { return !v; }); } }, '☑ Gridlines'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showFormulaBar ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowFormulaBar(function (v) { return !v; }); } }, '☑ Formula Bar')
+                          ),
+                          h('div', { key: 'sh2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showHeadings ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowHeadings(function (v) { return !v; }); } }, '☑ Headings'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn ' + (showStatusBar ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setShowStatusBar(function (v) { return !v; }); } }, '☑ Status Bar')
+                          ),
+                        ]),
+                        ribbonGroup('Zoom', [
+                          h('div', { key: 'zm1', className: 'dsh-xl-rgroup-row' },
+                            [75, 100, 125, 150].map(function (z) { return h('button', { key: z, type: 'button', className: 'dsh-xl-rbtn ' + (zoom === z ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setZoom(z); } }, z + '%'); })
+                          ),
+                          h('div', { key: 'zm2', className: 'dsh-xl-rgroup-row' },
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setZoom(function (z) { return Math.max(50, z - 10); }); } }, 'Zoom Out −'),
+                            h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, 'Zoom In +')
+                          ),
+                        ]),
+                        ribbonGroup('Window', h('div', { className: 'dsh-xl-rgroup-row' },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeTopRow ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeTopRow(function (v) { return !v; }); } }, h('span', null, '❄'), h('span', null, 'Top Row')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall ' + (freezeFirstCol ? 'dsh-xl-rbtn-active' : ''), onClick: function () { setFreezeFirstCol(function (v) { return !v; }); } }, h('span', null, '❄'), h('span', null, 'First Col')),
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn dsh-xl-rbtn-tall', disabled: !freezeTopRow && !freezeFirstCol, onClick: function () { setFreezeTopRow(false); setFreezeFirstCol(false); } }, h('span', null, '✕'), h('span', null, 'Unfreeze'))
+                        )),
+                      ]
+                )
+              : null,
 
             // New Workbook inline bar
             showNewForm
@@ -1833,40 +2407,74 @@
             error ? h('div', { className: 'dsh-xl-banner dsh-xl-banner-err', role: 'alert' }, h('span', null, error), h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setError(''); } }, 'Dismiss')) : null,
             notice ? h('div', { className: 'dsh-xl-banner dsh-xl-banner-info' }, h('span', null, notice), h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setNotice(''); } }, 'OK')) : null,
 
-            // Inline Chart Preview Drawer
+            // Inline Chart Preview Drawer (Column, Bar, Line, Pie, Scatter)
             chartData
               ? (function () {
                   var maxV = Math.max.apply(null, chartData.values.map(function (v) { return Math.abs(v); })) || 1;
-                  var w = 480, ht = 150, pad = 28;
+                  var w = 520, ht = 165, pad = 32;
+                  var palette = [activeTheme.primary, '#0284c7', '#d97706', '#7c3aed', '#dc2626', '#059669', '#0891b2'];
+                  var titleMap = { column: 'Column Chart', bar: 'Bar Chart', line: 'Line Chart', pie: 'Pie Chart', scatter: 'Scatter Chart' };
+                  var svgBody = null;
+                  if (chartData.type === 'column') {
+                    svgBody = chartData.values.map(function (val, idx) {
+                      var bw = Math.max(12, Math.floor((w - pad * 2) / chartData.values.length) - 6);
+                      var bh = Math.max(2, Math.round((Math.abs(val) / maxV) * (ht - pad * 2)));
+                      var x = pad + idx * (bw + 6), y = ht - pad - bh;
+                      return h('g', { key: idx },
+                        h('rect', { x: x, y: y, width: bw, height: bh, fill: palette[idx % palette.length], rx: 2 }),
+                        h('text', { x: x + bw / 2, y: ht - 10, fontSize: '10', textAnchor: 'middle', fill: '#444' }, String(chartData.labels[idx]).slice(0, 8))
+                      );
+                    });
+                  } else if (chartData.type === 'bar') {
+                    var bh2 = Math.max(10, Math.floor((ht - pad) / Math.max(1, chartData.values.length)) - 4);
+                    svgBody = chartData.values.map(function (val, idx) {
+                      var bw2 = Math.max(4, Math.round((Math.abs(val) / maxV) * (w - 110)));
+                      var y2 = 14 + idx * (bh2 + 4);
+                      return h('g', { key: idx },
+                        h('text', { x: 64, y: y2 + bh2 - 2, fontSize: '10', textAnchor: 'end', fill: '#444' }, String(chartData.labels[idx]).slice(0, 9)),
+                        h('rect', { x: 70, y: y2, width: bw2, height: bh2, fill: palette[idx % palette.length], rx: 2 })
+                      );
+                    });
+                  } else if (chartData.type === 'pie') {
+                    var total = chartData.values.reduce(function (a, b) { return a + Math.abs(b); }, 0) || 1;
+                    var cx = 110, cy = ht / 2, rad = 60, ang = -Math.PI / 2;
+                    svgBody = chartData.values.map(function (val, idx) {
+                      var slice = (Math.abs(val) / total) * Math.PI * 2;
+                      var x1 = cx + rad * Math.cos(ang), y1 = cy + rad * Math.sin(ang);
+                      var x2 = cx + rad * Math.cos(ang + slice), y2 = cy + rad * Math.sin(ang + slice);
+                      var large = slice > Math.PI ? 1 : 0;
+                      var d = 'M ' + cx + ' ' + cy + ' L ' + x1 + ' ' + y1 + ' A ' + rad + ' ' + rad + ' 0 ' + large + ' 1 ' + x2 + ' ' + y2 + ' Z';
+                      ang += slice;
+                      return h('g', { key: idx },
+                        h('path', { d: d, fill: palette[idx % palette.length], stroke: '#fff', strokeWidth: '1' }),
+                        h('rect', { x: 200, y: 14 + idx * 16, width: 10, height: 10, fill: palette[idx % palette.length], rx: 2 }),
+                        h('text', { x: 216, y: 23 + idx * 16, fontSize: '11', fill: '#333' }, String(chartData.labels[idx]).slice(0, 14) + ' (' + Math.round((Math.abs(val) / total) * 100) + '%)')
+                      );
+                    });
+                  } else if (chartData.type === 'scatter') {
+                    svgBody = chartData.values.map(function (val, idx) {
+                      var x = pad + (chartData.values.length > 1 ? (idx / (chartData.values.length - 1)) * (w - pad * 2) : (w - pad * 2) / 2);
+                      var y = ht - pad - (Math.abs(val) / maxV) * (ht - pad * 2);
+                      return h('circle', { key: idx, cx: x, cy: y, r: 4.5, fill: palette[idx % palette.length] });
+                    });
+                  } else {
+                    svgBody = h('polyline', {
+                      fill: 'none', stroke: activeTheme.primary, strokeWidth: '2.5',
+                      points: chartData.values.map(function (val, idx) {
+                        var x = pad + (chartData.values.length > 1 ? (idx / (chartData.values.length - 1)) * (w - pad * 2) : (w - pad * 2) / 2);
+                        var y = ht - pad - (Math.abs(val) / maxV) * (ht - pad * 2);
+                        return x + ',' + y;
+                      }).join(' '),
+                    });
+                  }
                   return h(
                     'div',
                     { style: { padding: '8px 14px', borderBottom: '1px solid rgba(127,127,127,0.22)', background: 'var(--dsw-alias-bg-secondary, #f8f9fa)' } },
                     h('div', { style: { display: 'flex', justifyContent: 'space-between', marginBottom: '6px', fontWeight: 600 } },
-                      h('span', null, (chartData.type === 'bar' ? 'Bar Chart' : 'Line Chart') + ' (' + chartData.range + ')'),
+                      h('span', null, (titleMap[chartData.type] || 'Chart') + ' (' + chartData.range + ')'),
                       h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setChartData(null); } }, 'Close')
                     ),
-                    h(
-                      'svg', { width: w, height: ht, style: { background: '#ffffff', border: '1px solid #ddd', borderRadius: '4px' } },
-                      chartData.type === 'bar'
-                        ? chartData.values.map(function (val, idx) {
-                            var bw = Math.max(12, Math.floor((w - pad * 2) / chartData.values.length) - 6);
-                            var bh = Math.max(2, Math.round((Math.abs(val) / maxV) * (ht - pad * 2)));
-                            var x = pad + idx * (bw + 6);
-                            var y = ht - pad - bh;
-                            return h('g', { key: idx },
-                              h('rect', { x: x, y: y, width: bw, height: bh, fill: '#107c41', rx: 2 }),
-                              h('text', { x: x + bw / 2, y: ht - 8, fontSize: '10', textAnchor: 'middle', fill: '#444' }, String(chartData.labels[idx]).slice(0, 8))
-                            );
-                          })
-                        : h('polyline', {
-                            fill: 'none', stroke: '#107c41', strokeWidth: '2.5',
-                            points: chartData.values.map(function (val, idx) {
-                              var x = pad + (chartData.values.length > 1 ? (idx / (chartData.values.length - 1)) * (w - pad * 2) : (w - pad * 2) / 2);
-                              var y = ht - pad - (Math.abs(val) / maxV) * (ht - pad * 2);
-                              return x + ',' + y;
-                            }).join(' '),
-                          })
-                    )
+                    h('svg', { width: w, height: ht, style: { background: '#ffffff', border: '1px solid #ddd', borderRadius: '4px' } }, svgBody)
                   );
                 })()
               : null,
@@ -1905,111 +2513,158 @@
 
             // 5. Excel Interactive Grid
             sheet
-              ? h(
-                  'div', { className: 'dsh-xl-grid-wrap ' + (showGridlines ? 'dsh-xl-gridlines' : '') },
-                  h(
-                    'table', { className: 'dsh-xl-table', style: { zoom: zoom / 100 } },
-                    showHeadings
-                      ? h('thead', null, h('tr', null,
-                          h('th', { className: 'dsh-xl-corner' }),
-                          colIndices.map(function (c) {
-                            var letter = colIndexToLetter(c);
-                            var w = pendingColWidths[letter] || (sheet.column_widths && sheet.column_widths[letter]);
-                            var px = w ? Math.max(52, Math.min(420, Math.round(w * 8))) : 100;
-                            var colActive = c >= selNorm.c1 && c <= selNorm.c2;
-                            return h('th', {
-                              key: letter, className: 'dsh-xl-colhdr ' + (colActive ? 'dsh-xl-colhdr-active' : ''),
-                              style: { width: px + 'px', minWidth: px + 'px' },
-                              onClick: function () { setSelStart({ row: 1, col: c }); setSelEnd({ row: rowCount, col: c }); },
-                            }, letter, h('span', { className: 'dsh-xl-resizer', onMouseDown: function (e) { e.stopPropagation(); startColResize(letter, e.clientX, px); } }));
-                          })
-                        ))
-                      : null,
+              ? (function () {
+                  var dupCounts = null;
+                  if (condRule && condRule.type === 'dup') {
+                    dupCounts = {};
+                    for (var dr = 1; dr <= rowCount; dr++) {
+                      for (var dc = 1; dc <= colCount; dc++) {
+                        var dv = String(getCellDisplay(makeCoord(dr, dc)) || '');
+                        if (dv !== '') dupCounts[dv] = (dupCounts[dv] || 0) + 1;
+                      }
+                    }
+                  }
+                  var scaleMin = Infinity, scaleMax = -Infinity;
+                  if (condRule && condRule.type === 'scale') {
+                    for (var sr = 1; sr <= rowCount; sr++) {
+                      for (var sc = 1; sc <= colCount; sc++) {
+                        var sv = toNum(getCellDisplay(makeCoord(sr, sc)));
+                        if (!isNaN(sv)) { if (sv < scaleMin) scaleMin = sv; if (sv > scaleMax) scaleMax = sv; }
+                      }
+                    }
+                  }
+                  var paNorm = null;
+                  if (printCfg.printArea) {
+                    var paParts = printCfg.printArea.split(':');
+                    var pa1 = parseCoord(paParts[0]), pa2 = parseCoord(paParts[1] || paParts[0]);
+                    if (pa1 && pa2) paNorm = normalizeRange(pa1, pa2);
+                  }
+                  return h(
+                    'div', { className: 'dsh-xl-grid-wrap ' + (showGridlines ? 'dsh-xl-gridlines' : ''), style: { direction: sheetRtl ? 'rtl' : 'ltr' } },
                     h(
-                      'tbody', null,
-                      rowIndices.map(function (r) {
-                        if (autoFilterOn && filterQuery.trim() && r > 1) {
-                          var q = filterQuery.toLowerCase(), hit = false;
-                          for (var fc = 1; fc <= colCount; fc++) {
-                            if (String(getCellDisplay(makeCoord(r, fc))).toLowerCase().indexOf(q) !== -1) { hit = true; break; }
-                          }
-                          if (!hit) return null;
-                        }
-                        var rowActive = r >= selNorm.r1 && r <= selNorm.r2;
-                        return h(
-                          'tr', { key: r, className: freezeTopRow && r === 1 ? 'dsh-xl-frozen-row' : '' },
-                          showHeadings
-                            ? h('td', { className: 'dsh-xl-rowhdr ' + (rowActive ? 'dsh-xl-rowhdr-active' : ''), onClick: function () { setSelStart({ row: r, col: 1 }); setSelEnd({ row: r, col: colCount }); } }, r)
-                            : null,
-                          colIndices.map(function (c) {
-                            var coord = makeCoord(r, c);
-                            var isActive = selStart.row === r && selStart.col === c;
-                            var inRange = r >= selNorm.r1 && r <= selNorm.r2 && c >= selNorm.c1 && c <= selNorm.c2 && !(selNorm.r1 === selNorm.r2 && selNorm.c1 === selNorm.c2);
-                            var isBottomRight = r === selNorm.r2 && c === selNorm.c2;
-                            var st = getCellStyle(coord);
-                            var disp = getCellDisplay(coord);
-                            var condBg = undefined;
-                            if (condRule && disp !== '') {
-                              var cn = toNum(disp);
-                              if (!isNaN(cn)) {
-                                if (condRule.type === 'gt' && cn > condRule.value) condBg = '#C6EFCE';
-                                if (condRule.type === 'lt' && cn < condRule.value) condBg = '#FFC7CE';
-                              }
+                      'table', { className: 'dsh-xl-table', style: { zoom: zoom / 100 } },
+                      showHeadings
+                        ? h('thead', null, h('tr', null,
+                            h('th', { className: 'dsh-xl-corner' }),
+                            colIndices.map(function (c) {
+                              if (hiddenCols[c]) return null;
+                              var letter = colIndexToLetter(c);
+                              var w = pendingColWidths[letter] || (sheet.column_widths && sheet.column_widths[letter]);
+                              var px = w ? Math.max(52, Math.min(420, Math.round(w * 8))) : 100;
+                              var colActive = c >= selNorm.c1 && c <= selNorm.c2;
+                              return h('th', {
+                                key: letter, className: 'dsh-xl-colhdr ' + (colActive ? 'dsh-xl-colhdr-active' : '') + (pageBreakView && c % 8 === 0 ? ' dsh-xl-pagebreak-col' : ''),
+                                style: { width: px + 'px', minWidth: px + 'px' },
+                                onClick: function () { setSelStart({ row: 1, col: c }); setSelEnd({ row: rowCount, col: c }); },
+                              }, letter, h('span', { className: 'dsh-xl-resizer', onMouseDown: function (e) { e.stopPropagation(); startColResize(letter, e.clientX, px); } }));
+                            })
+                          ))
+                        : null,
+                      h(
+                        'tbody', null,
+                        rowIndices.map(function (r) {
+                          if (hiddenRows[r]) return null;
+                          if (autoFilterOn && filterQuery.trim() && r > 1) {
+                            var q = filterQuery.toLowerCase(), hit = false;
+                            for (var fc = 1; fc <= colCount; fc++) {
+                              if (String(getCellDisplay(makeCoord(r, fc))).toLowerCase().indexOf(q) !== -1) { hit = true; break; }
                             }
-                            var noteText = pendingNotes[coord];
-                            var bp = st.border_preset;
-                            var cellCss = {
-                              fontFamily: st.fontFamily || st.font_family || undefined,
-                              fontSize: (st.fontSize || st.font_size) ? (st.fontSize || st.font_size) + 'px' : undefined,
-                              fontWeight: st.bold ? '700' : undefined,
-                              fontStyle: st.italic ? 'italic' : undefined,
-                              textDecoration: [st.underline ? 'underline' : '', st.strike ? 'line-through' : ''].filter(Boolean).join(' ') || undefined,
-                              color: st.font_color || st.color || undefined,
-                              backgroundColor: condBg || st.fill_color || st.fill || undefined,
-                              textAlign: st.align || undefined,
-                              verticalAlign: st.valign || undefined,
-                              whiteSpace: st.wrap ? 'normal' : 'nowrap',
-                              border: bp === 'all' ? '1px solid #666' : undefined,
-                              borderBottom: bp === 'bottom' ? '1px solid #444' : bp === 'top_bottom' ? '3px double #444' : undefined,
-                              borderTop: bp === 'top_bottom' ? '1px solid #444' : undefined,
-                            };
-                            var cls = 'dsh-xl-cell' +
-                              (freezeFirstCol && c === 1 ? ' dsh-xl-frozen-col' : '') +
-                              (inRange ? ' dsh-xl-cell-inrange' : '') +
-                              (isActive ? ' dsh-xl-cell-active' : '') +
-                              (noteText ? ' dsh-xl-cell-note' : '');
+                            if (!hit) return null;
+                          }
+                          var rowActive = r >= selNorm.r1 && r <= selNorm.r2;
+                          var rHt = rowHeights[r];
+                          return h(
+                            'tr', {
+                              key: r,
+                              className: (freezeTopRow && r === 1 ? 'dsh-xl-frozen-row' : '') + (pageBreakView && r % 25 === 0 ? ' dsh-xl-pagebreak-row' : ''),
+                              style: rHt ? { height: rHt + 'px' } : undefined,
+                            },
+                            showHeadings
+                              ? h('td', { className: 'dsh-xl-rowhdr ' + (rowActive ? 'dsh-xl-rowhdr-active' : ''), onClick: function () { setSelStart({ row: r, col: 1 }); setSelEnd({ row: r, col: colCount }); } }, r)
+                              : null,
+                            colIndices.map(function (c) {
+                              if (hiddenCols[c]) return null;
+                              var coord = makeCoord(r, c);
+                              var isActive = selStart.row === r && selStart.col === c;
+                              var inRange = r >= selNorm.r1 && r <= selNorm.r2 && c >= selNorm.c1 && c <= selNorm.c2 && !(selNorm.r1 === selNorm.r2 && selNorm.c1 === selNorm.c2);
+                              var isBottomRight = r === selNorm.r2 && c === selNorm.c2;
+                              var st = getCellStyle(coord);
+                              var disp = getCellDisplay(coord);
+                              var condBg = undefined;
+                              if (condRule && disp !== '') {
+                                var cn = toNum(disp);
+                                if (condRule.type === 'gt' && !isNaN(cn) && cn > condRule.value) condBg = '#C6EFCE';
+                                else if (condRule.type === 'lt' && !isNaN(cn) && cn < condRule.value) condBg = '#FFC7CE';
+                                else if (condRule.type === 'eq' && String(disp) === String(condRule.value)) condBg = '#FFEB9C';
+                                else if (condRule.type === 'contains' && String(disp).toLowerCase().indexOf(condRule.value) !== -1) condBg = '#DBEAFE';
+                                else if (condRule.type === 'dup' && dupCounts && dupCounts[String(disp)] > 1) condBg = '#FFC7CE';
+                                else if (condRule.type === 'scale' && !isNaN(cn) && scaleMax > scaleMin) {
+                                  var ratio = (cn - scaleMin) / (scaleMax - scaleMin);
+                                  condBg = ratio > 0.66 ? '#C6EFCE' : ratio > 0.33 ? '#FFEB9C' : '#FFC7CE';
+                                }
+                              }
+                              var noteText = pendingNotes[coord];
+                              var inPrint = paNorm && r >= paNorm.r1 && r <= paNorm.r2 && c >= paNorm.c1 && c <= paNorm.c2;
+                              var bp = st.border_preset;
+                              var cellCss = {
+                                fontFamily: st.fontFamily || st.font_family || undefined,
+                                fontSize: (st.fontSize || st.font_size) ? (st.fontSize || st.font_size) + 'px' : undefined,
+                                fontWeight: st.bold ? '700' : undefined,
+                                fontStyle: st.italic ? 'italic' : undefined,
+                                textDecoration: [st.underline ? 'underline' : '', st.strike ? 'line-through' : ''].filter(Boolean).join(' ') || undefined,
+                                color: st.font_color || st.color || undefined,
+                                backgroundColor: condBg || st.fill_color || st.fill || undefined,
+                                textAlign: st.align || undefined,
+                                verticalAlign: st.valign || undefined,
+                                paddingLeft: st.indent ? (5 + st.indent * 10) + 'px' : undefined,
+                                whiteSpace: st.wrap ? 'normal' : 'nowrap',
+                                border: bp === 'all' ? '1px solid #666' : undefined,
+                                borderBottom: bp === 'bottom' ? '1px solid #444' : bp === 'top_bottom' ? '3px double #444' : undefined,
+                                borderTop: bp === 'top_bottom' ? '1px solid #444' : undefined,
+                              };
+                              var cls = 'dsh-xl-cell' +
+                                (freezeFirstCol && c === 1 ? ' dsh-xl-frozen-col' : '') +
+                                (inRange ? ' dsh-xl-cell-inrange' : '') +
+                                (isActive ? ' dsh-xl-cell-active' : '') +
+                                (precedentMap[coord] ? ' dsh-xl-cell-precedent' : '') +
+                                (dependentMap[coord] ? ' dsh-xl-cell-dependent' : '') +
+                                (inPrint ? ' dsh-xl-cell-printarea' : '') +
+                                (pageBreakView && c % 8 === 0 ? ' dsh-xl-pagebreak-col' : '') +
+                                (noteText ? ' dsh-xl-cell-note' : '');
 
-                            return h(
-                              'td',
-                              {
-                                key: coord, className: cls, style: cellCss, title: noteText || undefined,
-                                onMouseDown: function (e) { if (e.button === 2) return; setFileMenuOpen(false); isDraggingRef.current = true; selectCell(r, c, false, e.shiftKey); },
-                                onMouseEnter: function () { if (isDraggingRef.current) setSelEnd({ row: r, col: c }); else if (isFillingRef.current) handleFillDragEnter(r, c); },
-                                onDoubleClick: function () { selectCell(r, c, true, false); },
-                                onContextMenu: function (e) { e.preventDefault(); selectCell(r, c, false, false); setCtxMenu({ x: e.clientX, y: e.clientY, row: r, col: c }); },
-                              },
-                              isActive && editing
-                                ? h('input', {
-                                    className: 'dsh-xl-editor-input', autoFocus: true, value: draftValue,
-                                    onChange: function (e) { var v = e.target.value; setDraftValue(v); var u = {}; u[coord] = v; setCellValuesBatch(u); },
-                                    onBlur: function () { setEditing(false); },
-                                    onKeyDown: function (e) {
-                                      if (e.key === 'Enter') { e.preventDefault(); selectCell(r + 1, c, false, false); }
-                                      else if (e.key === 'Tab') { e.preventDefault(); selectCell(r, c + 1, false, false); }
-                                      else if (e.key === 'Escape') { setDraftValue(getCellRaw(coord)); setEditing(false); }
-                                    },
-                                  })
-                                : disp,
-                              isBottomRight && !editing && !sheetProtected
-                                ? h('span', { className: 'dsh-xl-fillhandle', title: 'Drag to AutoFill', onMouseDown: function (e) { e.stopPropagation(); isFillingRef.current = true; } })
-                                : null
-                            );
-                          })
-                        );
-                      })
+                              return h(
+                                'td',
+                                {
+                                  key: coord, className: cls, style: cellCss, title: noteText || hyperlinks[coord] || undefined,
+                                  onMouseDown: function (e) { if (e.button === 2) return; setFileMenuOpen(false); isDraggingRef.current = true; selectCell(r, c, false, e.shiftKey); },
+                                  onMouseEnter: function () { if (isDraggingRef.current) setSelEnd({ row: r, col: c }); else if (isFillingRef.current) handleFillDragEnter(r, c); },
+                                  onDoubleClick: function () { selectCell(r, c, true, false); },
+                                  onContextMenu: function (e) { e.preventDefault(); selectCell(r, c, false, false); setCtxMenu({ x: e.clientX, y: e.clientY, row: r, col: c }); },
+                                },
+                                isActive && editing
+                                  ? h('input', {
+                                      className: 'dsh-xl-editor-input', autoFocus: true, value: draftValue,
+                                      onChange: function (e) { var v = e.target.value; setDraftValue(v); var u = {}; u[coord] = v; setCellValuesBatch(u); },
+                                      onBlur: function () { setEditing(false); },
+                                      onKeyDown: function (e) {
+                                        if (e.key === 'Enter') { e.preventDefault(); selectCell(r + 1, c, false, false); }
+                                        else if (e.key === 'Tab') { e.preventDefault(); selectCell(r, c + 1, false, false); }
+                                        else if (e.key === 'Escape') { setDraftValue(getCellRaw(coord)); setEditing(false); }
+                                      },
+                                    })
+                                  : disp,
+                                showAllNotes && noteText ? h('span', { className: 'dsh-xl-note-inline' }, noteText) : null,
+                                isBottomRight && !editing && !sheetProtected
+                                  ? h('span', { className: 'dsh-xl-fillhandle', title: 'Drag to AutoFill', onMouseDown: function (e) { e.stopPropagation(); isFillingRef.current = true; } })
+                                  : null
+                              );
+                            })
+                          );
+                        })
+                      )
                     )
-                  )
-                )
+                  );
+                })()
               : h('div', { className: 'dsh-xl-empty' },
                   h(ExcelStudioIcon, { size: 42 }),
                   h('div', { style: { fontWeight: 700, fontSize: '16px' } }, 'DeepSeek Excel Studio'),
@@ -2023,7 +2678,7 @@
                   'div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setFxModalOpen(false); } },
                   h(
                     'div', { className: 'dsh-xl-modal', onClick: function (e) { e.stopPropagation(); } },
-                    h('div', { className: 'dsh-xl-modal-hdr' }, h('span', null, 'Insert Function (fx) — 125+ Excel Functions'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setFxModalOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Insert Function (fx) — 125+ Excel Functions'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setFxModalOpen(false); } }, '✕')),
                     h(
                       'div', { className: 'dsh-xl-modal-body' },
                       h('div', { style: { display: 'flex', gap: '8px' } },
@@ -2045,7 +2700,7 @@
                       ),
                       fxSelected
                         ? h('div', { style: { padding: '8px', background: 'rgba(16,124,65,0.06)', borderRadius: '4px', fontSize: '12px' } },
-                            h('div', { style: { fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: '#107c41', marginBottom: '4px' } }, fxSelected.sig),
+                            h('div', { style: { fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: activeTheme.primary, marginBottom: '4px' } }, fxSelected.sig),
                             h('div', null, fxSelected.desc)
                           )
                         : null,
@@ -2058,12 +2713,209 @@
                 )
               : null,
 
+            // PivotTable Modal
+            pivotOpen && sheet
+              ? (function () {
+                  var pRows = computePivotRows();
+                  return h(
+                    'div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setPivotOpen(false); } },
+                    h('div', { className: 'dsh-xl-modal', onClick: function (e) { e.stopPropagation(); } },
+                      h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'PivotTable Builder'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setPivotOpen(false); } }, '✕')),
+                      h('div', { className: 'dsh-xl-modal-body' },
+                        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
+                          h('label', null, 'Row Col: ', h('select', { className: 'dsh-xl-rselect', value: String(pivotCfg.rowCol), onChange: function (e) { setPivotCfg(function (p) { return Object.assign({}, p, { rowCol: Number(e.target.value) }); }); } },
+                            colIndices.map(function (c) { return h('option', { key: c, value: String(c) }, colIndexToLetter(c) + (getCellDisplay(makeCoord(1, c)) ? ' (' + getCellDisplay(makeCoord(1, c)) + ')' : '')); })
+                          )),
+                          h('label', null, 'Value Col: ', h('select', { className: 'dsh-xl-rselect', value: String(pivotCfg.valCol), onChange: function (e) { setPivotCfg(function (p) { return Object.assign({}, p, { valCol: Number(e.target.value) }); }); } },
+                            colIndices.map(function (c) { return h('option', { key: c, value: String(c) }, colIndexToLetter(c) + (getCellDisplay(makeCoord(1, c)) ? ' (' + getCellDisplay(makeCoord(1, c)) + ')' : '')); })
+                          )),
+                          h('label', null, 'Agg: ', h('select', { className: 'dsh-xl-rselect', value: pivotCfg.agg, onChange: function (e) { setPivotCfg(function (p) { return Object.assign({}, p, { agg: e.target.value }); }); } },
+                            ['SUM', 'COUNT', 'AVERAGE', 'MIN', 'MAX'].map(function (a) { return h('option', { key: a, value: a }, a); })
+                          ))
+                        ),
+                        h('div', { className: 'dsh-xl-fnlist', style: { height: '200px' } },
+                          pRows.length
+                            ? pRows.map(function (pr) { return h('div', { key: pr.key, className: 'dsh-xl-fnrow' }, h('span', null, pr.key), h('strong', null, String(pr.value))); })
+                            : h('div', { style: { padding: '12px', opacity: 0.6 } }, 'No rows found to pivot (data starts on row 2).')
+                        ),
+                        h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+                          h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setPivotOpen(false); } }, 'Close'),
+                          h('button', { type: 'button', className: 'dsh-xl-btn-primary', disabled: !pRows.length, onClick: function () {
+                            var upd = {};
+                            upd[makeCoord(selStart.row, selStart.col)] = 'Group';
+                            upd[makeCoord(selStart.row, selStart.col + 1)] = pivotCfg.agg;
+                            for (var i = 0; i < pRows.length; i++) {
+                              upd[makeCoord(selStart.row + 1 + i, selStart.col)] = pRows[i].key;
+                              upd[makeCoord(selStart.row + 1 + i, selStart.col + 1)] = String(pRows[i].value);
+                            }
+                            setCellValuesBatch(upd); setPivotOpen(false); setNotice('Inserted PivotTable at ' + activeCoord);
+                          } }, 'Insert at ' + activeCoord)
+                        )
+                      )
+                    )
+                  );
+                })()
+              : null,
+
+            // Goal Seek Modal
+            goalSeekOpen
+              ? h('div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setGoalSeekOpen(false); } },
+                  h('div', { className: 'dsh-xl-modal', style: { width: '380px' }, onClick: function (e) { e.stopPropagation(); } },
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'What-If Analysis: Goal Seek'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setGoalSeekOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-body' },
+                      h('label', null, 'Set formula cell:', h('input', { className: 'dsh-xl-rinput', style: { width: '100%', marginTop: '4px' }, value: goalCfg.targetCell, onChange: function (e) { setGoalCfg(function (g) { return Object.assign({}, g, { targetCell: e.target.value }); }); } })),
+                      h('label', null, 'To target value:', h('input', { className: 'dsh-xl-rinput', style: { width: '100%', marginTop: '4px' }, value: goalCfg.targetVal, onChange: function (e) { setGoalCfg(function (g) { return Object.assign({}, g, { targetVal: e.target.value }); }); } })),
+                      h('label', null, 'By changing input cell:', h('input', { className: 'dsh-xl-rinput', style: { width: '100%', marginTop: '4px' }, value: goalCfg.changingCell, onChange: function (e) { setGoalCfg(function (g) { return Object.assign({}, g, { changingCell: e.target.value }); }); } })),
+                      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+                        h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setGoalSeekOpen(false); } }, 'Cancel'),
+                        h('button', { type: 'button', className: 'dsh-xl-btn-primary', onClick: handleRunGoalSeek }, 'Solve')
+                      )
+                    )
+                  )
+                )
+              : null,
+
+            // Defined Names Manager Modal
+            nameMgrOpen
+              ? h('div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setNameMgrOpen(false); } },
+                  h('div', { className: 'dsh-xl-modal', style: { width: '440px' }, onClick: function (e) { e.stopPropagation(); } },
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Name Manager (Defined Names)'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setNameMgrOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-body' },
+                      h('div', { style: { display: 'flex', gap: '6px' } },
+                        h('input', { className: 'dsh-xl-rinput', style: { flex: 1 }, placeholder: 'Name (e.g. TaxRate)', value: newDefName, onChange: function (e) { setNewDefName(e.target.value); } }),
+                        h('input', { className: 'dsh-xl-rinput', style: { width: '110px' }, placeholder: 'Ref (e.g. B2:B10)', value: newDefRef, onChange: function (e) { setNewDefRef(e.target.value); } }),
+                        h('button', { type: 'button', className: 'dsh-xl-btn-primary', onClick: function () {
+                          var nm = newDefName.trim(), rf = newDefRef.trim().toUpperCase();
+                          if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(nm) && rf) {
+                            setNamedRanges(function (m) { var n = Object.assign({}, m); n[nm] = rf; return n; });
+                            setNewDefName(''); setNotice('Defined name "' + nm + '" = ' + rf);
+                          }
+                        } }, 'Add')
+                      ),
+                      h('div', { className: 'dsh-xl-fnlist', style: { height: '160px' } },
+                        Object.keys(namedRanges).length
+                          ? Object.keys(namedRanges).map(function (k) {
+                              return h('div', { key: k, className: 'dsh-xl-fnrow' },
+                                h('span', null, h('strong', null, k), '  =  ', namedRanges[k]),
+                                h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setNamedRanges(function (m) { var n = Object.assign({}, m); delete n[k]; return n; }); } }, 'Delete')
+                              );
+                            })
+                          : h('div', { style: { padding: '12px', opacity: 0.6 } }, 'No defined names yet. Use them in any formula like =SUM(Sales)*TaxRate.')
+                      )
+                    )
+                  )
+                )
+              : null,
+
+            // Data Validation Modal
+            valModalOpen
+              ? h('div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setValModalOpen(false); } },
+                  h('div', { className: 'dsh-xl-modal', style: { width: '380px' }, onClick: function (e) { e.stopPropagation(); } },
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Data Validation (' + formatRangeLabel(selStart, selEnd) + ')'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setValModalOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-body' },
+                      h('label', null, 'Validation Type:', h('select', { className: 'dsh-xl-rselect', style: { width: '100%', marginTop: '4px' }, value: valCfg.type, onChange: function (e) { setValCfg(function (v) { return Object.assign({}, v, { type: e.target.value }); }); } },
+                        h('option', { value: 'number' }, 'Number Range (Min – Max)'), h('option', { value: 'list' }, 'Allowed List (comma-separated)')
+                      )),
+                      valCfg.type === 'number'
+                        ? h('div', { style: { display: 'flex', gap: '8px' } },
+                            h('label', { style: { flex: 1 } }, 'Min:', h('input', { className: 'dsh-xl-rinput', style: { width: '100%' }, value: valCfg.min, onChange: function (e) { setValCfg(function (v) { return Object.assign({}, v, { min: e.target.value }); }); } })),
+                            h('label', { style: { flex: 1 } }, 'Max:', h('input', { className: 'dsh-xl-rinput', style: { width: '100%' }, value: valCfg.max, onChange: function (e) { setValCfg(function (v) { return Object.assign({}, v, { max: e.target.value }); }); } }))
+                          )
+                        : h('label', null, 'Allowed values:', h('input', { className: 'dsh-xl-rinput', style: { width: '100%', marginTop: '4px' }, value: valCfg.list, onChange: function (e) { setValCfg(function (v) { return Object.assign({}, v, { list: e.target.value }); }); } })),
+                      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+                        h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () {
+                          setValidations(function (m) { var n = Object.assign({}, m); for (var r = selNorm.r1; r <= selNorm.r2; r++) for (var c = selNorm.c1; c <= selNorm.c2; c++) delete n[makeCoord(r, c)]; return n; });
+                          setValModalOpen(false); setNotice('Cleared validation on selection.');
+                        } }, 'Clear Rule'),
+                        h('button', { type: 'button', className: 'dsh-xl-btn-primary', onClick: function () {
+                          setValidations(function (m) { var n = Object.assign({}, m); for (var r = selNorm.r1; r <= selNorm.r2; r++) for (var c = selNorm.c1; c <= selNorm.c2; c++) n[makeCoord(r, c)] = Object.assign({}, valCfg); return n; });
+                          setValModalOpen(false); setNotice('Applied Data Validation to ' + formatRangeLabel(selStart, selEnd));
+                        } }, 'Apply')
+                      )
+                    )
+                  )
+                )
+              : null,
+
+            // Custom Sort Modal
+            customSortOpen && sheet
+              ? h('div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setCustomSortOpen(false); } },
+                  h('div', { className: 'dsh-xl-modal', style: { width: '360px' }, onClick: function (e) { e.stopPropagation(); } },
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Custom Sort'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setCustomSortOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-body' },
+                      h('label', null, 'Sort by Column:', h('select', { className: 'dsh-xl-rselect', style: { width: '100%', marginTop: '4px' }, value: String(sortCfg.col), onChange: function (e) { setSortCfg(function (s) { return Object.assign({}, s, { col: Number(e.target.value) }); }); } },
+                        colIndices.map(function (c) { return h('option', { key: c, value: String(c) }, 'Column ' + colIndexToLetter(c)); })
+                      )),
+                      h('label', null, 'Order:', h('select', { className: 'dsh-xl-rselect', style: { width: '100%', marginTop: '4px' }, value: sortCfg.asc ? 'asc' : 'desc', onChange: function (e) { setSortCfg(function (s) { return Object.assign({}, s, { asc: e.target.value === 'asc' }); }); } },
+                        h('option', { value: 'asc' }, 'Ascending (A → Z / Smallest → Largest)'), h('option', { value: 'desc' }, 'Descending (Z → A / Largest → Smallest)')
+                      )),
+                      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } },
+                        h('button', { type: 'button', className: 'dsh-xl-rbtn', onClick: function () { setCustomSortOpen(false); } }, 'Cancel'),
+                        h('button', { type: 'button', className: 'dsh-xl-btn-primary', onClick: function () { runSheetOp('sort_column', { index: sortCfg.col, ascending: sortCfg.asc }); setCustomSortOpen(false); } }, 'Sort')
+                      )
+                    )
+                  )
+                )
+              : null,
+
+            // Insert Symbol Modal
+            symbolOpen
+              ? h('div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setSymbolOpen(false); } },
+                  h('div', { className: 'dsh-xl-modal', style: { width: '360px' }, onClick: function (e) { e.stopPropagation(); } },
+                    h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Insert Symbol'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setSymbolOpen(false); } }, '✕')),
+                    h('div', { className: 'dsh-xl-modal-body' },
+                      h('div', { className: 'dsh-xl-symbol-grid' },
+                        EXCEL_SYMBOLS.map(function (sym) {
+                          return h('button', {
+                            key: sym, type: 'button', className: 'dsh-xl-symbol-btn',
+                            onClick: function () {
+                              var cur = String(getCellRaw(activeCoord) || '');
+                              var u = {}; u[activeCoord] = cur + sym;
+                              setCellValuesBatch(u); setDraftValue(cur + sym); setSymbolOpen(false);
+                            },
+                          }, sym);
+                        })
+                      )
+                    )
+                  )
+                )
+              : null,
+
+            // Workbook Statistics Modal
+            statsOpen && sheet
+              ? (function () {
+                  var used = 0, formulas = 0, notesCnt = Object.keys(pendingNotes).filter(function (k) { return Boolean(pendingNotes[k]); }).length;
+                  for (var r = 1; r <= rowCount; r++) {
+                    for (var c = 1; c <= colCount; c++) {
+                      var rv = getCellRaw(makeCoord(r, c));
+                      if (rv !== '') { used++; if (String(rv).startsWith('=')) formulas++; }
+                    }
+                  }
+                  return h('div', { className: 'dsh-xl-modal-backdrop', onClick: function () { setStatsOpen(false); } },
+                    h('div', { className: 'dsh-xl-modal', style: { width: '400px' }, onClick: function (e) { e.stopPropagation(); } },
+                      h('div', { className: 'dsh-xl-modal-hdr', style: { background: activeTheme.primary } }, h('span', null, 'Workbook Statistics'), h('button', { type: 'button', className: 'dsh-xl-qat-btn', onClick: function () { setStatsOpen(false); } }, '✕')),
+                      h('div', { className: 'dsh-xl-modal-body' },
+                        h('div', null, h('strong', null, 'File: '), sheet.file_path),
+                        h('div', null, h('strong', null, 'Active Sheet: '), sheet.active_sheet, ' (', (sheet.sheets || []).length, ' total sheets)'),
+                        h('div', null, h('strong', null, 'Cells with Data: '), String(used)),
+                        h('div', null, h('strong', null, 'Formulas: '), String(formulas)),
+                        h('div', null, h('strong', null, 'Defined Names: '), String(Object.keys(namedRanges).length)),
+                        h('div', null, h('strong', null, 'Cell Notes: '), String(notesCnt)),
+                        h('div', null, h('strong', null, 'Unsaved Changes: '), String(dirtyCount)),
+                        h('div', { style: { display: 'flex', justifyContent: 'flex-end' } }, h('button', { type: 'button', className: 'dsh-xl-btn-primary', onClick: function () { setStatsOpen(false); } }, 'OK'))
+                      )
+                    )
+                  );
+                })()
+              : null,
+
             // Right-Click Context Menu
             ctxMenu
               ? h('div', { className: 'dsh-xl-ctxmenu', style: { left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }, onClick: function (e) { e.stopPropagation(); } },
                   h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { handleCopy(true); setCtxMenu(null); } }, h('span', null, 'Cut'), h('span', { style: { opacity: 0.5 } }, 'Ctrl+X')),
                   h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { handleCopy(false); setCtxMenu(null); } }, h('span', null, 'Copy'), h('span', { style: { opacity: 0.5 } }, 'Ctrl+C')),
-                  h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { handlePaste(); setCtxMenu(null); } }, h('span', null, 'Paste'), h('span', { style: { opacity: 0.5 } }, 'Ctrl+V')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { handlePaste('all'); setCtxMenu(null); } }, h('span', null, 'Paste'), h('span', { style: { opacity: 0.5 } }, 'Ctrl+V')),
+                  h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { handlePaste('values'); setCtxMenu(null); } }, 'Paste Values Only'),
                   h('div', { className: 'dsh-xl-menu-sep' }),
                   h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { runSheetOp('insert_rows', { index: ctxMenu.row, amount: 1 }); setCtxMenu(null); } }, 'Insert Row Above'),
                   h('button', { type: 'button', className: 'dsh-xl-menu-item', onClick: function () { if (window.confirm('Delete row ' + ctxMenu.row + '?')) runSheetOp('delete_rows', { index: ctxMenu.row, amount: 1 }); setCtxMenu(null); } }, 'Delete Row'),
@@ -2082,33 +2934,35 @@
                     var active = name === sheet.active_sheet;
                     return h('button', {
                       key: name, type: 'button', className: 'dsh-xl-sheettab ' + (active ? 'dsh-xl-sheettab-active' : ''),
-                      title: 'Double-click to rename',
+                      title: workbookProtected ? 'Workbook structure is protected' : 'Double-click to rename',
                       onClick: function () { if (!active) openWorkbook(sheet.file_path, name); },
-                      onDoubleClick: function () { var nm = window.prompt('Rename worksheet:', name); if (nm && nm.trim() && nm.trim() !== name) runSheetOp('rename_sheet', { sheet_name: name, new_name: nm.trim() }); },
+                      onDoubleClick: function () { if (workbookProtected) return; var nm = window.prompt('Rename worksheet:', name); if (nm && nm.trim() && nm.trim() !== name) runSheetOp('rename_sheet', { sheet_name: name, new_name: nm.trim() }); },
                     }, name);
                   }),
-                  h('button', { type: 'button', className: 'dsh-xl-addsheet', title: 'New sheet', onClick: function () { var nm = window.prompt('New worksheet name:', 'Sheet' + ((sheet.sheets || []).length + 1)); if (nm && nm.trim()) runSheetOp('create_sheet', { new_name: nm.trim() }); } }, '+'),
-                  h('button', { type: 'button', className: 'dsh-xl-rbtn', style: { marginLeft: 'auto' }, onClick: function () { runSheetOp('duplicate_sheet'); } }, 'Duplicate'),
+                  h('button', { type: 'button', className: 'dsh-xl-addsheet', disabled: workbookProtected, title: 'New sheet', onClick: function () { var nm = window.prompt('New worksheet name:', 'Sheet' + ((sheet.sheets || []).length + 1)); if (nm && nm.trim()) runSheetOp('create_sheet', { new_name: nm.trim() }); } }, '+'),
+                  h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: workbookProtected, style: { marginLeft: 'auto' }, onClick: function () { runSheetOp('duplicate_sheet'); } }, 'Duplicate'),
                   (sheet.sheets || []).length > 1
-                    ? h('button', { type: 'button', className: 'dsh-xl-rbtn', style: { color: '#c00000' }, onClick: function () { if (window.confirm('Delete "' + sheet.active_sheet + '"?')) runSheetOp('delete_sheet'); } }, 'Delete')
+                    ? h('button', { type: 'button', className: 'dsh-xl-rbtn', disabled: workbookProtected, style: { color: '#c00000' }, onClick: function () { if (window.confirm('Delete "' + sheet.active_sheet + '"?')) runSheetOp('delete_sheet'); } }, 'Delete')
                     : null
                 )
               : null,
 
-            // 7. Excel Green Status Bar
-            h(
-              'div', { className: 'dsh-xl-statusbar' },
-              h('span', null, editing ? 'Edit' : (sheet ? 'Ready · ' + sheet.file_path : 'Ready')),
-              h('div', { style: { display: 'inline-flex', alignItems: 'center', gap: '14px' } },
-                selStats ? h('span', null, (selStats.avg !== null ? 'Average: ' + selStats.avg + '   ' : '') + 'Count: ' + selStats.count + (selStats.avg !== null ? '   Sum: ' + selStats.sum : '')) : null,
-                h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } },
-                  h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.max(50, z - 10); }); } }, '−'),
-                  h('span', null, zoom + '%'),
-                  h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, '+')
-                ),
-                h('span', null, 'v0.5.0')
-              )
-            )
+            // 7. Excel Status Bar (themed, toggleable in View tab)
+            showStatusBar
+              ? h(
+                  'div', { className: 'dsh-xl-statusbar', style: { background: activeTheme.primary } },
+                  h('span', null, editing ? 'Edit' : (sheet ? 'Ready · ' + sheet.file_path : 'Ready')),
+                  h('div', { style: { display: 'inline-flex', alignItems: 'center', gap: '14px' } },
+                    selStats ? h('span', null, (selStats.avg !== null ? 'Average: ' + selStats.avg + '   ' : '') + 'Count: ' + selStats.count + (selStats.avg !== null ? '   Sum: ' + selStats.sum : '')) : null,
+                    h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } },
+                      h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.max(50, z - 10); }); } }, '−'),
+                      h('span', null, zoom + '%'),
+                      h('button', { type: 'button', className: 'dsh-xl-qat-btn', style: { height: '18px' }, onClick: function () { setZoom(function (z) { return Math.min(200, z + 10); }); } }, '+')
+                    ),
+                    h('span', null, 'v0.6.0')
+                  )
+                )
+              : null
           );
         }
 
